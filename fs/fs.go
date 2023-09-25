@@ -1,10 +1,10 @@
 package fs
 
 import (
-	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -13,6 +13,8 @@ import (
 
 	"github.com/axkit/bsw"
 	"github.com/axkit/errors"
+	"github.com/axkit/gonfig"
+	"github.com/axkit/gonfig/gonfigenv"
 )
 
 type AwsCompletedPart struct {
@@ -33,29 +35,37 @@ func (p *AwsCompletedPart) PartNumberPtr() *int64 {
 }
 
 type Service struct {
-	cfg *Config
+	cfg      *Config
+	BasePath gonfig.String `cfg:"bc_storage_root_path" default:"/tmp"`
 }
 
 var _ bsw.BlockStorageWrapper = (*Service)(nil)
 
 type Config struct {
-	BasePath         string `json:"basePath"`
 	URLEncryptionKey string `json:"urlEncryptionKey"`
 	RetryCount       int    `json:"retryCount"`
 }
 
-func New(cfg *Config) *Service {
+func NewFileStorageWrapper(cfg *Config) (*Service, error) {
 	s := Service{cfg: cfg}
-	return &s
-}
 
-func (s *Service) Init(ctx context.Context) error {
-
-	if _, err := os.Stat(s.cfg.BasePath); err != nil {
-		return errors.Catch(err).Set("path", s.cfg.BasePath).StatusCode(500).Critical().Msg("path not exist")
+	g := gonfig.New()
+	if errs := g.BindStruct(&s); len(errs) > 0 {
+		return nil, errs[0]
 	}
 
-	return nil
+	es := gonfigenv.NewEnvSource("", true)
+	if err := es.ApplyTo(g, true); err != nil {
+		return nil, err
+	}
+
+	if _, err := os.Stat(s.BasePath.String()); err != nil {
+		return nil, errors.Catch(err).Set("path", s.BasePath).StatusCode(500).Critical().Msg("path not exist")
+	}
+
+	fmt.Println("base path is", s.BasePath.String())
+
+	return &s, nil
 }
 
 // PreSignPutObjectURL returns presigned URL for PUT object request.
