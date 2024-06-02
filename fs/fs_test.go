@@ -1,26 +1,17 @@
 package fs_test
 
-import (
-	"context"
-	"fmt"
-	"os"
-	"testing"
+// func TestMain(m *testing.M) {
+// 	cfg := fs.Config{}
 
-	"github.com/axkit/bsw/fs"
-)
+// 	s := fs.NewFileSystemStorage(&cfg)
+// 	if err := s.Init(context.Background()); err != nil {
+// 		fmt.Println("fs init error:", err)
+// 		os.Exit(1)
+// 	}
 
-func TestMain(m *testing.M) {
-	cfg := fs.Config{}
+// 	os.Exit(m.Run())
+// }
 
-	s := fs.NewFileStorageWrapper(&cfg)
-	if err := s.Init(context.Background()); err != nil {
-		fmt.Println("fs init error:", err)
-		os.Exit(1)
-	}
+// func TestService_UploadFile(t *testing.T) {
 
-	os.Exit(m.Run())
-}
-
-func TestService_UploadFile(t *testing.T) {
-
-}
+// }

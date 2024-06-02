@@ -9,6 +9,7 @@ import (
 var ErrWrongInvocation = errors.New("wrong invocation").Critical()
 
 type BlockStorageWrapper interface {
+	Name() string
 	PreSignPutObjectURL(o *Object, timeout time.Duration) (string, error)
 	PreSignMultipartObjectURL(o *Object, timeout time.Duration) (urls []string, uploadID string, err error)
 	CompleteMultipartUpload(o *Object, uploadID string, parts []CompletedPart) error
@@ -20,22 +21,37 @@ type CompletedPart interface {
 	PartNumberPtr() *int64
 }
 
-func NewObject(w BlockStorageWrapper, bucket, key string) *Object {
-	return &Object{
+type Option func(*Object)
+
+func WithMetadata(m map[string]*string) Option {
+	return func(o *Object) {
+		o.metadata = m
+	}
+}
+
+func WithValidTill(t int64) Option {
+	return func(o *Object) {
+		o.validTill = t
+	}
+}
+
+func WithMultiParts(parts int) Option {
+	return func(o *Object) {
+		o.parts = parts
+	}
+}
+
+func NewObject(w BlockStorageWrapper, bucket, key string, opts ...Option) *Object {
+	o := Object{
 		w:      w,
 		bucket: bucket,
 		key:    key,
 		parts:  1,
 	}
-}
-
-func NewMultipartObject(w BlockStorageWrapper, bucket, key string, parts int) *Object {
-	return &Object{
-		w:      w,
-		bucket: bucket,
-		key:    key,
-		parts:  parts,
+	for _, opt := range opts {
+		opt(&o)
 	}
+	return &o
 }
 
 func (o *Object) ReplaceMetadata(m map[string]*string) *Object {

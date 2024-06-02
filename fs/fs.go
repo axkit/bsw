@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
-	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -35,8 +34,7 @@ func (p *AwsCompletedPart) PartNumberPtr() *int64 {
 }
 
 type Service struct {
-	cfg      *Config
-	BasePath gonfig.String `cfg:"bc_storage_root_path" default:"/tmp"`
+	cfg *Config
 }
 
 var _ bsw.BlockStorageWrapper = (*Service)(nil)
@@ -44,6 +42,7 @@ var _ bsw.BlockStorageWrapper = (*Service)(nil)
 type Config struct {
 	URLEncryptionKey string `json:"urlEncryptionKey"`
 	RetryCount       int    `json:"retryCount"`
+	BasePath         string `json:"basePath"`
 }
 
 func NewFileStorageWrapper(cfg *Config) (*Service, error) {
@@ -59,11 +58,9 @@ func NewFileStorageWrapper(cfg *Config) (*Service, error) {
 		return nil, err
 	}
 
-	if _, err := os.Stat(s.BasePath.String()); err != nil {
-		return nil, errors.Catch(err).Set("path", s.BasePath).StatusCode(500).Critical().Msg("path not exist")
+	if _, err := os.Stat(s.cfg.BasePath); err != nil {
+		return nil, errors.Catch(err).Set("path", s.cfg.BasePath).StatusCode(500).Critical().Msg("path not exist")
 	}
-
-	fmt.Println("base path is", s.BasePath.String())
 
 	return &s, nil
 }
@@ -224,4 +221,8 @@ func mergeFiles(srcFiles []string, destFile string) error {
 	}
 
 	return nil
+}
+
+func (s *Service) Name() string {
+	return "fs"
 }

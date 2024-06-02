@@ -175,3 +175,7 @@ func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (str
 	return res, nil
 
 }
+
+func (s *Service) Name() string {
+	return "s3"
+}
