@@ -177,7 +177,7 @@ func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (str
 	sasPermissions := sas.BlobPermissions{Read: true}
 	expiryTime := time.Now().Add(timeout)
 
-	sasURL, err := s.containerClient.NewBlobClient(o.Key()).GetSASURL(sasPermissions, expiryTime, nil)
+	sasURL, err := s.containerClient.NewBlobClient(path.Join(o.Bucket(), o.Key())).GetSASURL(sasPermissions, expiryTime, nil)
 	if err != nil {
 		return "", errors.Catch(err).Critical().StatusCode(503).Msg("failed to create SAS get URL")
 	}
