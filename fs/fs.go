@@ -8,6 +8,9 @@
 //
 // FileSystemStorageServer serves the upload and download endpoints that
 // accept these tokens and store objects under a base directory.
+//
+// On case-insensitive file systems names that differ only in case refer to
+// the same file.
 package fs
 
 import (

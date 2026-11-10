@@ -5,26 +5,23 @@ import (
 )
 
 // UploadHandler handles POST /api/v1/bos/upload.
+//
+// It does not implement vatel.Inputer on purpose: vatel decodes the body
+// of a POST request with Input() as JSON, while upload is a multipart form.
+// The token is read with FormValue from the query string or the form.
 type UploadHandler struct {
-	d     SignedURLDecoder
-	s     *FileSystemStorageServer
-	input struct {
-		Dest string `param:"dest"`
-	}
-}
-
-// Input returns the request parameters.
-func (c *UploadHandler) Input() any {
-	return &c.input
+	d SignedURLDecoder
+	s *FileSystemStorageServer
 }
 
 // Handle stores the uploaded file.
 func (c *UploadHandler) Handle(ctx vatel.Context) error {
-	if c.input.Dest == "" {
+	dest := string(ctx.FormValue("dest"))
+	if dest == "" {
 		return ErrValidation.New().Msg("dest is empty")
 	}
 
-	o, err := c.d.DecodeSignedURL(c.input.Dest, OpPut)
+	o, err := c.d.DecodeSignedURL(dest, OpPut)
 	if err != nil {
 		return err
 	}

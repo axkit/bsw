@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"mime/multipart"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,13 +190,17 @@ func TestEndpoints(t *testing.T) {
 	if down.s != srv || down.d != s {
 		t.Error("download handler must have the server and the decoder set")
 	}
-	if down.Input() != &down.input || up.Input() != &up.input {
+	if down.Input() != &down.input {
 		t.Error("Input() must return the input struct")
+	}
+	// vatel decodes the body of a POST endpoint with Input() as JSON
+	if _, ok := any(up).(vatel.Inputer); ok {
+		t.Error("upload handler must not implement vatel.Inputer")
 	}
 }
 
 // uploadCtx returns a vatel context with a multipart request body.
-func uploadCtx(t *testing.T, field, content string) (vatel.Context, *fasthttp.RequestCtx) {
+func uploadCtx(t *testing.T, dest, field, content string) (vatel.Context, *fasthttp.RequestCtx) {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
@@ -210,6 +215,7 @@ func uploadCtx(t *testing.T, field, content string) (vatel.Context, *fasthttp.Re
 
 	var rc fasthttp.RequestCtx
 	rc.Request.Header.SetMethod("POST")
+	rc.Request.SetRequestURI("/api/v1/bos/upload?dest=" + url.QueryEscape(dest))
 	rc.Request.Header.SetContentType(mw.FormDataContentType())
 	rc.Request.SetBody(body.Bytes())
 	return vatel.NewContext(&rc), &rc
@@ -222,8 +228,7 @@ func TestUploadHandler(t *testing.T) {
 	get, _ := s.PreSignGetObjectURL(o, time.Minute)
 
 	h := srv.Endpoints()[0].Controller().(*UploadHandler)
-	ctx, _ := uploadCtx(t, "file", "payload")
-	h.input.Dest = put
+	ctx, _ := uploadCtx(t, put, "file", "payload")
 	if err := h.Handle(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -247,8 +252,7 @@ func TestUploadHandler(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h := srv.Endpoints()[0].Controller().(*UploadHandler)
-			h.input.Dest = tc.dest
-			ctx, _ := uploadCtx(t, tc.field, "x")
+			ctx, _ := uploadCtx(t, tc.dest, tc.field, "x")
 			err := h.Handle(ctx)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)

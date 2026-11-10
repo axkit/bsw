@@ -7,6 +7,8 @@ require (
 	github.com/aws/aws-sdk-go v1.44.318
 	github.com/axkit/errors v1.1.0
 	github.com/axkit/vatel v0.14.1
+	github.com/fasthttp/router v1.4.4
+	github.com/rs/zerolog v1.26.0
 	github.com/valyala/fasthttp v1.31.0
 )
 
@@ -17,12 +19,10 @@ require (
 	github.com/axkit/date v1.0.1 // indirect
 	github.com/axkit/fasthttp-realip v1.0.1 // indirect
 	github.com/axkit/tinymap v0.0.2 // indirect
-	github.com/fasthttp/router v1.4.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect
 	github.com/regorov/websocket v0.1.3 // indirect
-	github.com/rs/zerolog v1.26.0 // indirect
 	github.com/savsgio/gotils v0.0.0-20210921075833-21a6215cb0e4 // indirect
 	github.com/tidwall/gjson v1.14.2 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

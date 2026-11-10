@@ -67,7 +67,7 @@ service URL, e.g. for Azurite.
 
 `fs.Service` issues signed tokens instead of URLs. `PreSignPutObjectURL`
 returns a token for `POST /api/v1/bos/upload?dest=<token>` (multipart form,
-file in the `file` field), `PreSignGetObjectURL` a token for
+file in the `file` field; `dest` may also be a form field), `PreSignGetObjectURL` a token for
 `GET /api/v1/bos/download?src=<token>`. The endpoints are provided by
 `fs.FileSystemStorageServer.Endpoints()`.
 
@@ -80,7 +80,12 @@ Files are stored as `<basePath>/<bucket>/<key>`. Keys with `..`, `.` or empty
 path elements, absolute keys and keys with backslashes are rejected; on
 Windows also reserved names (`NUL`, ...), `:` and names ending with a dot or
 space. All file operations go through `os.Root`, so a symlink inside the base
-path can not lead outside of it. An upload
+path can not lead outside of it.
+
+On case-insensitive file systems (Windows, macOS by default) names that
+differ only in case refer to the same file: tokens for `TenantA/report` and
+`tenanta/report` give access to the same object. Use case-normalized bucket
+names and keys, or a case-sensitive file system, if this matters. An upload
 replaces the existing file atomically. The upload size is limited by the
 fasthttp server setting `MaxRequestBodySize`.
 
