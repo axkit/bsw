@@ -1,52 +1,27 @@
+// Package s3 implements bsw.BlockStorageWrapper for Amazon S3 and
+// S3-compatible storages.
 package s3
 
 import (
 	"context"
-	"strconv"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/axkit/bsw"
 	"github.com/axkit/errors"
-
-	"github.com/aws/aws-sdk-go/aws"
 )
 
-type AwsCompletedPart struct {
-	// Entity tag returned when the part was uploaded.
-	ETag string
+// AwsCompletedPart describes an uploaded part.
+//
+// Deprecated: use bsw.Part.
+type AwsCompletedPart = bsw.Part
 
-	// Part number that identifies the part. This is a positive integer between
-	// 1 and 10,000.
-	PartNumber int64
-}
-
-func (p *AwsCompletedPart) ETagPtr() *string {
-	return &p.ETag
-}
-
-func (p *AwsCompletedPart) PartNumberPtr() *int64 {
-	return &p.PartNumber
-}
-
-type Service struct {
-	cfg  *Config
-	sess *session.Session
-	svc  *s3.S3
-}
-
-type Config struct {
-	Region      *string `json:"region"`
-	Credentials struct {
-		AwsAccessKeyID     string `json:"awsAccessKeyId"`
-		AwsSecretAccessKey string `json:"awsSecretAccessKey"`
-	} `json:"credentials"`
-	RetryCount int `json:"retryCount"`
-}
+// DefaultRetryCount is used when Config.RetryCount is 0.
+const DefaultRetryCount = 5
 
 var (
 	ErrSessionInit = errors.Template("aws session init failed").
@@ -61,82 +36,137 @@ var (
 			Code("BSW-0205").StatusCode(500).Severity(errors.Critical)
 )
 
-// check that Service implements interface bsw.ObjectService
+// Service implements bsw.BlockStorageWrapper for S3.
+type Service struct {
+	cfg Config
+	svc *s3.S3
+}
+
+// Config holds S3 settings.
+type Config struct {
+	Region      *string `json:"region"`
+	Credentials struct {
+		AwsAccessKeyID     string `json:"awsAccessKeyId"`
+		AwsSecretAccessKey string `json:"awsSecretAccessKey"`
+	} `json:"credentials"`
+	RetryCount int `json:"retryCount"`
+
+	// Endpoint overrides the S3 endpoint, e.g. for MinIO. Optional.
+	Endpoint string `json:"endpoint"`
+
+	// ForcePathStyle uses path-style URLs (https://host/bucket/key)
+	// instead of virtual-hosted ones. Usually needed with Endpoint.
+	ForcePathStyle bool `json:"forcePathStyle"`
+}
+
+// check that Service implements interface bsw.BlockStorageWrapper
 var _ bsw.BlockStorageWrapper = (*Service)(nil)
 
+// New returns a service. cfg is copied. Init must be called before use.
 func New(cfg *Config) *Service {
-	s := Service{cfg: cfg}
+	var s Service
+	if cfg != nil {
+		s.cfg = *cfg
+	}
 	if s.cfg.RetryCount == 0 {
-		s.cfg.RetryCount = 5
+		s.cfg.RetryCount = DefaultRetryCount
 	}
 	return &s
 }
 
+// Init creates an AWS session. It does not connect to S3.
 func (s *Service) Init(ctx context.Context) error {
-	var err error
-
-	if s.cfg.Region == nil {
+	if s.cfg.Region == nil || *s.cfg.Region == "" {
 		return bsw.ErrInvalidConfig.New().Msg("aws region not specified")
 	}
 
-	s.sess, err = session.NewSession(&aws.Config{
-		Region:      s.cfg.Region,
-		Credentials: credentials.NewStaticCredentials(s.cfg.Credentials.AwsAccessKeyID, s.cfg.Credentials.AwsSecretAccessKey, ""),
-	})
+	ac := &aws.Config{
+		Region:           s.cfg.Region,
+		Credentials:      credentials.NewStaticCredentials(s.cfg.Credentials.AwsAccessKeyID, s.cfg.Credentials.AwsSecretAccessKey, ""),
+		MaxRetries:       aws.Int(s.cfg.RetryCount),
+		S3ForcePathStyle: aws.Bool(s.cfg.ForcePathStyle),
+	}
+	if s.cfg.Endpoint != "" {
+		ac.Endpoint = aws.String(s.cfg.Endpoint)
+	}
+
+	sess, err := session.NewSession(ac)
 	if err != nil {
 		return ErrSessionInit.Wrap(err)
 	}
-	s.svc = s3.New(s.sess)
+	s.svc = s3.New(sess)
 	return nil
 }
 
+// PreSignMultipartObjectURL starts a multipart upload and returns
+// presigned PUT URLs for every part and the upload ID.
+// If a part URL can not be generated, the upload is aborted.
 func (s *Service) PreSignMultipartObjectURL(o *bsw.Object, timeout time.Duration) ([]string, string, error) {
-
-	mui := &s3.CreateMultipartUploadInput{
-		Bucket: aws.String(o.Bucket()),
-		Key:    aws.String(o.Key()),
+	if s.svc == nil {
+		return nil, "", bsw.ErrNotInitialized.New()
+	}
+	if err := bsw.ValidateParts(o.Parts()); err != nil {
+		return nil, "", err
 	}
 
-	req, resp := s.svc.CreateMultipartUploadRequest(mui)
-
-	req.RetryCount = s.cfg.RetryCount
-
-	if err := req.Send(); err != nil {
-		ex := ErrCreateMultipartUpload.Wrap(err).
+	resp, err := s.svc.CreateMultipartUpload(&s3.CreateMultipartUploadInput{
+		Bucket:   aws.String(o.Bucket()),
+		Key:      aws.String(o.Key()),
+		Metadata: o.Metadata(),
+	})
+	if err != nil {
+		return nil, "", withAwsCode(ErrCreateMultipartUpload.Wrap(err).
 			Set("bucket", o.Bucket()).
 			Set("key", o.Key()).
-			Set("parts", o.Parts())
-		if aerr, ok := errors.AsType[awserr.Error](err); ok {
-			ex.Set("awsErrCode", aerr.Code())
-		}
-		return nil, "", ex
+			Set("parts", o.Parts()), err)
 	}
+	uploadID := aws.StringValue(resp.UploadId)
 
-	// from here we do have
+	res := make([]string, 0, o.Parts())
+	for i := 1; i <= o.Parts(); i++ {
+		req, _ := s.svc.UploadPartRequest(&s3.UploadPartInput{
+			Bucket:     aws.String(o.Bucket()),
+			Key:        aws.String(o.Key()),
+			PartNumber: aws.Int64(int64(i)),
+			UploadId:   aws.String(uploadID),
+		})
 
-	var res []string
-	for i := 0; i < o.Parts(); i++ {
-		x := s.svc.NewRequest(&request.Operation{
-			Name:       "PutObject",
-			HTTPMethod: "PUT",
-			HTTPPath:   "/" + o.Bucket() + "/" + o.Key() + "?partNumber=" + strconv.Itoa(i+1) + "&uploadId=" + *resp.UploadId,
-		}, nil, nil)
-
-		u, err := x.Presign(timeout)
+		u, err := req.Presign(timeout)
 		if err != nil {
-			return nil, "", ErrPresignPartURL.Wrap(err).
+			ex := ErrPresignPartURL.Wrap(err).
 				Set("bucket", o.Bucket()).
 				Set("key", o.Key()).
-				Set("part", i+1)
+				Set("part", i).
+				Set("uploadID", uploadID)
+			if aerr := s.abort(o, uploadID); aerr != nil {
+				ex.Set("abortError", aerr.Error())
+			}
+			return nil, "", ex
 		}
 		res = append(res, u)
 	}
 
-	return res, *resp.UploadId, nil
+	return res, uploadID, nil
 }
 
-// CompleteMultipartUpload
+func (s *Service) abort(o *bsw.Object, uploadID string) error {
+	_, err := s.svc.AbortMultipartUpload(&s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(o.Bucket()),
+		Key:      aws.String(o.Key()),
+		UploadId: aws.String(uploadID),
+	})
+	return err
+}
+
+// CompleteMultipartUpload merges uploaded parts into a single object.
 func (s *Service) CompleteMultipartUpload(o *bsw.Object, uploadID string, parts []bsw.CompletedPart) error {
+	if s.svc == nil {
+		return bsw.ErrNotInitialized.New()
+	}
+	if uploadID == "" || len(parts) == 0 {
+		return bsw.ErrInvalidArgument.New().Msg("upload ID and parts are required").
+			Set("uploadID", uploadID).Set("parts", len(parts))
+	}
 
 	var cmu s3.CompletedMultipartUpload
 	for i := range parts {
@@ -148,23 +178,25 @@ func (s *Service) CompleteMultipartUpload(o *bsw.Object, uploadID string, parts 
 
 	_, err := s.svc.CompleteMultipartUpload(&s3.CompleteMultipartUploadInput{
 		Bucket:          aws.String(o.Bucket()),
-		Key:             aws.String(o.Bucket()),
+		Key:             aws.String(o.Key()),
 		UploadId:        aws.String(uploadID),
 		MultipartUpload: &cmu,
 	})
-
 	if err != nil {
-		return ErrCompleteMultipartUpload.Wrap(err).
+		return withAwsCode(ErrCompleteMultipartUpload.Wrap(err).
 			Set("bucket", o.Bucket()).
 			Set("key", o.Key()).
-			Set("uploadID", uploadID)
+			Set("uploadID", uploadID), err)
 	}
 
 	return nil
 }
 
-// PreSignPutObjectURL_ returns presigned URL for PUT object request.
+// PreSignPutObjectURL returns presigned URL for PUT object request.
 func (s *Service) PreSignPutObjectURL(o *bsw.Object, timeout time.Duration) (string, error) {
+	if s.svc == nil {
+		return "", bsw.ErrNotInitialized.New()
+	}
 	req, _ := s.svc.PutObjectRequest(&s3.PutObjectInput{
 		Bucket:   aws.String(o.Bucket()),
 		Key:      aws.String(o.Key()),
@@ -173,12 +205,16 @@ func (s *Service) PreSignPutObjectURL(o *bsw.Object, timeout time.Duration) (str
 
 	res, err := req.Presign(timeout)
 	if err != nil {
-		return res, ErrPresignURL.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
+		return "", ErrPresignURL.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
 	}
 	return res, nil
 }
 
+// PreSignGetObjectURL returns presigned URL for GET object request.
 func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (string, error) {
+	if s.svc == nil {
+		return "", bsw.ErrNotInitialized.New()
+	}
 	req, _ := s.svc.GetObjectRequest(&s3.GetObjectInput{
 		Bucket: aws.String(o.Bucket()),
 		Key:    aws.String(o.Key()),
@@ -186,12 +222,19 @@ func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (str
 
 	res, err := req.Presign(timeout)
 	if err != nil {
-		return res, ErrPresignURL.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
+		return "", ErrPresignURL.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
 	}
 	return res, nil
-
 }
 
+// Name returns "s3".
 func (s *Service) Name() string {
 	return "s3"
+}
+
+func withAwsCode(ex *errors.Error, err error) *errors.Error {
+	if aerr, ok := errors.AsType[awserr.Error](err); ok {
+		ex.Set("awsErrCode", aerr.Code())
+	}
+	return ex
 }

@@ -1,30 +1,342 @@
-package s3_test
+package s3
 
 import (
 	"context"
-	"fmt"
-	"os"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/axkit/bsw/s3"
+	"github.com/aws/aws-sdk-go/aws/request"
+	"github.com/axkit/bsw"
+	"github.com/axkit/errors"
 )
 
-func TestMain(m *testing.M) {
-	cfg := s3.Config{
-		Region:     aws.String("eu-europe-1"),
-		RetryCount: 5,
-	}
-
-	s := s3.New(&cfg)
-	if err := s.Init(context.Background()); err != nil {
-		fmt.Println("aws session init error:", err)
-		os.Exit(1)
-	}
-
-	os.Exit(m.Run())
+// fakeS3 is a minimal S3 API emulation that records requests.
+type fakeS3 struct {
+	mu       sync.Mutex
+	requests []recorded
+	fail     map[string]bool // operation -> respond with AccessDenied
 }
 
-func TestService_UploadFile(t *testing.T) {
+type recorded struct {
+	method, path, query, body string
+	header                    http.Header
+}
 
+func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.requests = append(f.requests, recorded{r.Method, r.URL.Path, r.URL.RawQuery, string(body), r.Header.Clone()})
+	f.mu.Unlock()
+
+	q := r.URL.Query()
+	op := ""
+	switch {
+	case r.Method == http.MethodPost && q.Has("uploads"):
+		op = "create"
+	case r.Method == http.MethodPost && q.Has("uploadId"):
+		op = "complete"
+	case r.Method == http.MethodDelete && q.Has("uploadId"):
+		op = "abort"
+	}
+
+	if f.fail[op] {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`)
+		return
+	}
+
+	switch op {
+	case "create":
+		io.WriteString(w, `<InitiateMultipartUploadResult><Bucket>b</Bucket><Key>k</Key><UploadId>UP-1</UploadId></InitiateMultipartUploadResult>`)
+	case "complete":
+		io.WriteString(w, `<CompleteMultipartUploadResult><Bucket>b</Bucket><Key>k</Key><ETag>"e"</ETag></CompleteMultipartUploadResult>`)
+	case "abort":
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusNotImplemented)
+	}
+}
+
+func (f *fakeS3) recorded() []recorded {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]recorded(nil), f.requests...)
+}
+
+func newTestService(t *testing.T) (*Service, *fakeS3, *url.URL) {
+	t.Helper()
+	fake := &fakeS3{fail: map[string]bool{}}
+	ts := httptest.NewServer(fake)
+	t.Cleanup(ts.Close)
+
+	cfg := &Config{
+		Region:         aws.String("eu-central-1"),
+		Endpoint:       ts.URL,
+		ForcePathStyle: true,
+	}
+	cfg.Credentials.AwsAccessKeyID = "AKID"
+	cfg.Credentials.AwsSecretAccessKey = "SECRET"
+
+	s := New(cfg)
+	if err := s.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(ts.URL)
+	return s, fake, u
+}
+
+func fields(err error) map[string]any {
+	return errors.Serialize(err, errors.WithAttributes(errors.AddFields)).Fields
+}
+
+func TestNew(t *testing.T) {
+	s := New(nil)
+	if s.cfg.RetryCount != DefaultRetryCount {
+		t.Errorf("RetryCount = %d, want %d", s.cfg.RetryCount, DefaultRetryCount)
+	}
+
+	cfg := &Config{Region: aws.String("r")}
+	s = New(cfg)
+	if cfg.RetryCount != 0 {
+		t.Error("New must not change the caller's config")
+	}
+	if s.cfg.RetryCount != DefaultRetryCount {
+		t.Errorf("RetryCount = %d, want %d", s.cfg.RetryCount, DefaultRetryCount)
+	}
+
+	s = New(&Config{RetryCount: 2})
+	if s.cfg.RetryCount != 2 {
+		t.Errorf("RetryCount = %d, want 2", s.cfg.RetryCount)
+	}
+	if s.Name() != "s3" {
+		t.Errorf("Name() = %q", s.Name())
+	}
+}
+
+func TestInitInvalidConfig(t *testing.T) {
+	for _, cfg := range []*Config{nil, {}, {Region: aws.String("")}} {
+		if err := New(cfg).Init(context.Background()); !errors.Is(err, bsw.ErrInvalidConfig) {
+			t.Errorf("config %+v: got %v, want ErrInvalidConfig", cfg, err)
+		}
+	}
+}
+
+func TestNotInitialized(t *testing.T) {
+	s := New(&Config{Region: aws.String("r")})
+	o := bsw.NewObject(s, "b", "k")
+
+	if _, err := s.PreSignPutObjectURL(o, time.Minute); !errors.Is(err, bsw.ErrNotInitialized) {
+		t.Errorf("PreSignPutObjectURL: %v", err)
+	}
+	if _, err := s.PreSignGetObjectURL(o, time.Minute); !errors.Is(err, bsw.ErrNotInitialized) {
+		t.Errorf("PreSignGetObjectURL: %v", err)
+	}
+	if _, _, err := s.PreSignMultipartObjectURL(o, time.Minute); !errors.Is(err, bsw.ErrNotInitialized) {
+		t.Errorf("PreSignMultipartObjectURL: %v", err)
+	}
+	if err := s.CompleteMultipartUpload(o, "u", []bsw.CompletedPart{&bsw.Part{}}); !errors.Is(err, bsw.ErrNotInitialized) {
+		t.Errorf("CompleteMultipartUpload: %v", err)
+	}
+}
+
+func TestPreSignPutObjectURL(t *testing.T) {
+	s, fake, srv := newTestService(t)
+	o := bsw.NewObject(s, "b", "dir/file name.pdf").SetMetadata("owner", "42")
+
+	raw, err := s.PreSignPutObjectURL(o, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+
+	if u.Host != srv.Host || u.Path != "/b/dir/file name.pdf" {
+		t.Errorf("url = %s", raw)
+	}
+	if q.Get("X-Amz-Expires") != "900" {
+		t.Errorf("X-Amz-Expires = %q, want 900", q.Get("X-Amz-Expires"))
+	}
+	if !strings.Contains(q.Get("X-Amz-SignedHeaders"), "x-amz-meta-owner") {
+		t.Errorf("metadata header is not signed: %q", q.Get("X-Amz-SignedHeaders"))
+	}
+	if !strings.HasPrefix(q.Get("X-Amz-Credential"), "AKID/") || q.Get("X-Amz-Signature") == "" {
+		t.Errorf("url is not signed: %s", raw)
+	}
+	if n := len(fake.recorded()); n != 0 {
+		t.Errorf("presigning must not send requests, sent %d", n)
+	}
+}
+
+func TestPreSignGetObjectURL(t *testing.T) {
+	s, _, srv := newTestService(t)
+	raw, err := s.PreSignGetObjectURL(bsw.NewObject(s, "b", "k"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(raw)
+	if u.Host != srv.Host || u.Path != "/b/k" || u.Query().Get("X-Amz-Expires") != "60" {
+		t.Errorf("url = %s", raw)
+	}
+}
+
+func TestPreSignErrors(t *testing.T) {
+	s, _, _ := newTestService(t)
+	o := bsw.NewObject(s, "b", "k")
+
+	// presigning fails for a non-positive expiration
+	if _, err := s.PreSignPutObjectURL(o, 0); !errors.Is(err, ErrPresignURL) {
+		t.Errorf("PreSignPutObjectURL: %v", err)
+	}
+	if _, err := s.PreSignGetObjectURL(o, -time.Second); !errors.Is(err, ErrPresignURL) {
+		t.Errorf("PreSignGetObjectURL: %v", err)
+	}
+}
+
+func TestPreSignMultipartObjectURL(t *testing.T) {
+	s, fake, _ := newTestService(t)
+	o := bsw.NewObject(s, "b", "dir/k", bsw.WithMultiParts(3)).SetMetadata("owner", "42")
+
+	urls, id, err := s.PreSignMultipartObjectURL(o, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "UP-1" {
+		t.Errorf("uploadID = %q, want UP-1", id)
+	}
+	if len(urls) != 3 {
+		t.Fatalf("got %d urls, want 3", len(urls))
+	}
+	for i, raw := range urls {
+		u, _ := url.Parse(raw)
+		q := u.Query()
+		if u.Path != "/b/dir/k" || q.Get("partNumber") != string(rune('1'+i)) || q.Get("uploadId") != "UP-1" || q.Get("X-Amz-Signature") == "" {
+			t.Errorf("part %d url = %s", i+1, raw)
+		}
+	}
+
+	reqs := fake.recorded()
+	if len(reqs) != 1 || reqs[0].method != http.MethodPost || reqs[0].path != "/b/dir/k" {
+		t.Fatalf("requests = %+v, want one create request", reqs)
+	}
+	if reqs[0].header.Get("X-Amz-Meta-Owner") != "42" {
+		t.Errorf("metadata is not passed to CreateMultipartUpload: %v", reqs[0].header)
+	}
+}
+
+func TestPreSignMultipartInvalidParts(t *testing.T) {
+	s, fake, _ := newTestService(t)
+	for _, parts := range []int{0, bsw.MaxParts + 1} {
+		_, _, err := s.PreSignMultipartObjectURL(bsw.NewObject(s, "b", "k", bsw.WithMultiParts(parts)), time.Minute)
+		if !errors.Is(err, bsw.ErrInvalidArgument) {
+			t.Errorf("parts=%d: got %v, want ErrInvalidArgument", parts, err)
+		}
+	}
+	if n := len(fake.recorded()); n != 0 {
+		t.Errorf("sent %d requests, want none", n)
+	}
+}
+
+func TestPreSignMultipartCreateFails(t *testing.T) {
+	s, fake, _ := newTestService(t)
+	fake.fail["create"] = true
+
+	_, _, err := s.PreSignMultipartObjectURL(bsw.NewObject(s, "b", "k", bsw.WithMultiParts(2)), time.Minute)
+	if !errors.Is(err, ErrCreateMultipartUpload) {
+		t.Fatalf("got %v, want ErrCreateMultipartUpload", err)
+	}
+	if f := fields(err); f["awsErrCode"] != "AccessDenied" || f["bucket"] != "b" || f["key"] != "k" {
+		t.Errorf("fields = %v", f)
+	}
+}
+
+func TestPreSignMultipartAbortsOnPresignFailure(t *testing.T) {
+	for _, abortFails := range []bool{false, true} {
+		s, fake, _ := newTestService(t)
+		fake.fail["abort"] = abortFails
+		s.svc.Handlers.Sign.PushFront(func(r *request.Request) {
+			if r.Operation.Name == "UploadPart" {
+				r.Error = io.ErrUnexpectedEOF
+			}
+		})
+
+		_, _, err := s.PreSignMultipartObjectURL(bsw.NewObject(s, "b", "k", bsw.WithMultiParts(2)), time.Minute)
+		if !errors.Is(err, ErrPresignPartURL) {
+			t.Fatalf("got %v, want ErrPresignPartURL", err)
+		}
+
+		reqs := fake.recorded()
+		if len(reqs) != 2 || reqs[1].method != http.MethodDelete || reqs[1].path != "/b/k" || !strings.Contains(reqs[1].query, "uploadId=UP-1") {
+			t.Fatalf("requests = %+v, want create and abort", reqs)
+		}
+
+		f := fields(err)
+		if f["uploadID"] != "UP-1" || f["part"] != 1 {
+			t.Errorf("fields = %v", f)
+		}
+		if _, ok := f["abortError"]; ok != abortFails {
+			t.Errorf("abortFails=%v: abortError field present=%v", abortFails, ok)
+		}
+	}
+}
+
+func TestCompleteMultipartUpload(t *testing.T) {
+	s, fake, _ := newTestService(t)
+	parts := []bsw.CompletedPart{
+		&bsw.Part{ETag: `"etag-1"`, PartNumber: 1},
+		&AwsCompletedPart{ETag: `"etag-2"`, PartNumber: 2},
+	}
+
+	if err := s.CompleteMultipartUpload(bsw.NewObject(s, "bucket", "dir/key"), "UP-1", parts); err != nil {
+		t.Fatal(err)
+	}
+
+	reqs := fake.recorded()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %+v", reqs)
+	}
+	r := reqs[0]
+	// regression: the key used to be set to the bucket name
+	if r.method != http.MethodPost || r.path != "/bucket/dir/key" || !strings.Contains(r.query, "uploadId=UP-1") {
+		t.Errorf("request = %s %s?%s", r.method, r.path, r.query)
+	}
+	for _, s := range []string{"etag-1", "etag-2", "<PartNumber>1</PartNumber>", "<PartNumber>2</PartNumber>"} {
+		if !strings.Contains(r.body, s) {
+			t.Errorf("body does not contain %q: %s", s, r.body)
+		}
+	}
+}
+
+func TestCompleteMultipartUploadErrors(t *testing.T) {
+	s, fake, _ := newTestService(t)
+	o := bsw.NewObject(s, "b", "k")
+	parts := []bsw.CompletedPart{&bsw.Part{ETag: "e", PartNumber: 1}}
+
+	if err := s.CompleteMultipartUpload(o, "", parts); !errors.Is(err, bsw.ErrInvalidArgument) {
+		t.Errorf("empty upload ID: %v", err)
+	}
+	if err := s.CompleteMultipartUpload(o, "UP-1", nil); !errors.Is(err, bsw.ErrInvalidArgument) {
+		t.Errorf("no parts: %v", err)
+	}
+	if n := len(fake.recorded()); n != 0 {
+		t.Errorf("sent %d requests, want none", n)
+	}
+
+	fake.fail["complete"] = true
+	err := s.CompleteMultipartUpload(o, "UP-1", parts)
+	if !errors.Is(err, ErrCompleteMultipartUpload) {
+		t.Fatalf("got %v, want ErrCompleteMultipartUpload", err)
+	}
+	if f := fields(err); f["awsErrCode"] != "AccessDenied" || f["uploadID"] != "UP-1" {
+		t.Errorf("fields = %v", f)
+	}
 }
