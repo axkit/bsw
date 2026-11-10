@@ -21,8 +21,6 @@ github.com/axkit/errors v1.1.0 h1:we3DOd1Va36Qp0lfm/TUIzxdkHhA/OmXxE+p9UEd2B4=
 github.com/axkit/errors v1.1.0/go.mod h1:mjZgyJmHz0k7TBVenWKi9q7rmAygzWg3SX8Zkrw4cCQ=
 github.com/axkit/fasthttp-realip v1.0.1 h1:K5QM8p9WvmYK+rviaYBRBfO3fV9zYawLn6szZNB79+I=
 github.com/axkit/fasthttp-realip v1.0.1/go.mod h1:TKjCWyEIPHDAV/A3U7FbLarkbI0be4JqHr+wFKvsvPc=
-github.com/axkit/gonfig v0.0.1 h1:4xtbe1qktlFQmgyx2zkCSOXjc0G9EgpGrnrXrWTsTFk=
-github.com/axkit/gonfig v0.0.1/go.mod h1:MviMj9UpfwxnugblICf6hnPK62fgkwWWsa9T8o2RE6A=
 github.com/axkit/tinymap v0.0.2 h1:dteldCrkDET1IepShoNjzRP6c3mHO+pZQAPE+3Ui7sg=
 github.com/axkit/tinymap v0.0.2/go.mod h1:gG4ao/XwW5A84aVwklicpEOYMHUKKnkdTFoFkDKcO0M=
 github.com/axkit/vatel v0.14.1 h1:FIEjhw2bgR1hVXfet02CxIsr1+gZal9zrwo7yeG+aas=
@@ -148,7 +146,6 @@ golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc
 golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
 golang.org/x/xerrors v0.0.0-20191011141410-1b5146add898/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
 golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
-gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v2 v2.2.8/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=
 gopkg.in/yaml.v2 v2.4.0 h1:D8xgwECY7CYvx+Y2n4sBz93Jn9JRvxdiyyo8CTfuKaY=
