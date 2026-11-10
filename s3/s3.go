@@ -48,6 +48,19 @@ type Config struct {
 	RetryCount int `json:"retryCount"`
 }
 
+var (
+	ErrSessionInit = errors.Template("aws session init failed").
+			Code("BSW-0201").StatusCode(500).Severity(errors.Critical)
+	ErrCreateMultipartUpload = errors.Template("create multipart upload request failed").
+					Code("BSW-0202").StatusCode(500).Severity(errors.Critical)
+	ErrPresignPartURL = errors.Template("presigned part URL generation failed").
+				Code("BSW-0203").StatusCode(500).Severity(errors.Critical)
+	ErrCompleteMultipartUpload = errors.Template("multipart complete failed").
+					Code("BSW-0204").StatusCode(500).Severity(errors.Critical)
+	ErrPresignURL = errors.Template("presigned URL generation failed").
+			Code("BSW-0205").StatusCode(500).Severity(errors.Critical)
+)
+
 // check that Service implements interface bsw.ObjectService
 var _ bsw.BlockStorageWrapper = (*Service)(nil)
 
@@ -63,7 +76,7 @@ func (s *Service) Init(ctx context.Context) error {
 	var err error
 
 	if s.cfg.Region == nil {
-		return errors.NewCritical("aws region not specified")
+		return bsw.ErrInvalidConfig.New().Msg("aws region not specified")
 	}
 
 	s.sess, err = session.NewSession(&aws.Config{
@@ -71,7 +84,7 @@ func (s *Service) Init(ctx context.Context) error {
 		Credentials: credentials.NewStaticCredentials(s.cfg.Credentials.AwsAccessKeyID, s.cfg.Credentials.AwsSecretAccessKey, ""),
 	})
 	if err != nil {
-		return err
+		return ErrSessionInit.Wrap(err)
 	}
 	s.svc = s3.New(s.sess)
 	return nil
@@ -89,11 +102,14 @@ func (s *Service) PreSignMultipartObjectURL(o *bsw.Object, timeout time.Duration
 	req.RetryCount = s.cfg.RetryCount
 
 	if err := req.Send(); err != nil {
-		ex := errors.Catch(err).StatusCode(500).SetPairs("bucket", o.Bucket(), "key", o.Key(), "parts", o.Parts()).Critical()
-		if aerr, ok := err.(awserr.Error); ok {
+		ex := ErrCreateMultipartUpload.Wrap(err).
+			Set("bucket", o.Bucket()).
+			Set("key", o.Key()).
+			Set("parts", o.Parts())
+		if aerr, ok := errors.AsType[awserr.Error](err); ok {
 			ex.Set("awsErrCode", aerr.Code())
 		}
-		return nil, "", ex.Msg("create multipart upload request failed")
+		return nil, "", ex
 	}
 
 	// from here we do have
@@ -108,10 +124,10 @@ func (s *Service) PreSignMultipartObjectURL(o *bsw.Object, timeout time.Duration
 
 		u, err := x.Presign(timeout)
 		if err != nil {
-			return nil, "", errors.Catch(err).
-				SetPairs("bucket", o.Bucket(), "key", o.Key(), "part", i+1).
-				Critical().
-				StatusCode(500).Msg("presigned part URL generation failed")
+			return nil, "", ErrPresignPartURL.Wrap(err).
+				Set("bucket", o.Bucket()).
+				Set("key", o.Key()).
+				Set("part", i+1)
 		}
 		res = append(res, u)
 	}
@@ -138,8 +154,10 @@ func (s *Service) CompleteMultipartUpload(o *bsw.Object, uploadID string, parts 
 	})
 
 	if err != nil {
-		return errors.Catch(err).Critical().SetPairs("bucket", o.Bucket(), "key", o.Key(), "uploadID", uploadID).
-			StatusCode(500).Msg("multipart complete failed")
+		return ErrCompleteMultipartUpload.Wrap(err).
+			Set("bucket", o.Bucket()).
+			Set("key", o.Key()).
+			Set("uploadID", uploadID)
 	}
 
 	return nil
@@ -155,8 +173,7 @@ func (s *Service) PreSignPutObjectURL(o *bsw.Object, timeout time.Duration) (str
 
 	res, err := req.Presign(timeout)
 	if err != nil {
-		return res, errors.Catch(err).Set("bucket", o.Bucket()).Set("key", o.Key()).StatusCode(500).
-			Critical().Msg("presigned URL generation failed")
+		return res, ErrPresignURL.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
 	}
 	return res, nil
 }
@@ -169,8 +186,7 @@ func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (str
 
 	res, err := req.Presign(timeout)
 	if err != nil {
-		return res, errors.Catch(err).Set("bucket", o.Bucket()).Set("key", o.Key()).StatusCode(500).
-			Critical().Msg("presigned URL generation failed")
+		return res, ErrPresignURL.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
 	}
 	return res, nil
 

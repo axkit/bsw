@@ -1,7 +1,6 @@
 package fs
 
 import (
-	"github.com/axkit/errors"
 	"github.com/axkit/vatel"
 )
 
@@ -20,7 +19,7 @@ func (c *DownloadHandler) Input() interface{} {
 func (c *DownloadHandler) Handle(ctx vatel.Context) error {
 
 	if c.input.Src == "" {
-		return errors.ValidationFailed("src is empty")
+		return ErrValidation.New().Msg("src is empty")
 	}
 
 	o, err := c.d.DecodeSignedURL(c.input.Src)
@@ -29,7 +28,7 @@ func (c *DownloadHandler) Handle(ctx vatel.Context) error {
 	}
 
 	if !o.StillValid() {
-		return errors.ValidationFailed("signed url is expired")
+		return ErrValidation.New().Msg("signed url is expired")
 	}
 
 	return c.s.ReadObjectTo(o, ctx.BodyWriter())

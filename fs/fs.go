@@ -39,6 +39,15 @@ type Service struct {
 
 var _ bsw.BlockStorageWrapper = (*Service)(nil)
 
+var (
+	ErrBasePathNotFound = errors.Template("path not exist").
+				Code("BSW-0401").StatusCode(500).Severity(errors.Critical)
+	ErrInvalidSignedURL = errors.Template("invalid signed URL").
+				Code("BSW-0402").StatusCode(400).Severity(errors.Tiny)
+	ErrValidation = errors.Template("validation failed").
+			Code("BSW-0403").StatusCode(400).Severity(errors.Tiny)
+)
+
 type Config struct {
 	URLEncryptionKey string `json:"urlEncryptionKey"`
 	RetryCount       int    `json:"retryCount"`
@@ -59,7 +68,7 @@ func NewFileStorageWrapper(cfg *Config) (*Service, error) {
 	}
 
 	if _, err := os.Stat(s.cfg.BasePath); err != nil {
-		return nil, errors.Catch(err).Set("path", s.cfg.BasePath).StatusCode(500).Critical().Msg("path not exist")
+		return nil, ErrBasePathNotFound.Wrap(err).Set("path", s.cfg.BasePath)
 	}
 
 	return &s, nil
@@ -99,7 +108,7 @@ func (s *Service) DecodeSignedURL(encodedStr string) (*bsw.Object, error) {
 
 	parts := strings.Split(uri, ":")
 	if len(parts) != 3 {
-		return nil, errors.New("invalid signed URL")
+		return nil, ErrInvalidSignedURL.New()
 	}
 
 	at, err := strconv.ParseInt(parts[2], 10, 64)

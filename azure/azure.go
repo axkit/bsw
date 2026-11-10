@@ -42,6 +42,17 @@ type Config struct {
 	ContainerName string `json:"containerName"`
 }
 
+var (
+	ErrCredential = errors.Template("failed to create credential").
+			Code("BSW-0301").StatusCode(500).Severity(errors.Critical)
+	ErrServiceClient = errors.Template("failed to create service client").
+				Code("BSW-0302").StatusCode(503).Severity(errors.Critical)
+	ErrPresignPutURL = errors.Template("failed to create SAS put URL").
+				Code("BSW-0303").StatusCode(503).Severity(errors.Critical)
+	ErrPresignGetURL = errors.Template("failed to create SAS get URL").
+				Code("BSW-0304").StatusCode(503).Severity(errors.Critical)
+)
+
 // check that Service implements interface bsw.ObjectService
 var _ bsw.BlockStorageWrapper = (*Service)(nil)
 
@@ -54,21 +65,21 @@ func (s *Service) Init(ctx context.Context) error {
 	var err error
 
 	if s.cfg.AccountName == "" {
-		return errors.NewCritical("account name is not set")
+		return bsw.ErrInvalidConfig.New().Msg("account name is not set")
 	}
 
 	if s.cfg.AccountKey == "" {
-		return errors.NewCritical("account key is not set")
+		return bsw.ErrInvalidConfig.New().Msg("account key is not set")
 	}
 
 	if s.cfg.ContainerName == "" {
-		return errors.NewCritical("container name is not set")
+		return bsw.ErrInvalidConfig.New().Msg("container name is not set")
 	}
 
 	// Create a credential using the storage account name and key
 	credential, err := azblob.NewSharedKeyCredential(s.cfg.AccountName, s.cfg.AccountKey)
 	if err != nil {
-		return errors.Catch(err).Critical().Msg("failed to create credential")
+		return ErrCredential.Wrap(err)
 	}
 
 	// Create a service client
@@ -77,7 +88,7 @@ func (s *Service) Init(ctx context.Context) error {
 		credential,
 		nil)
 	if err != nil {
-		return errors.Catch(err).Critical().StatusCode(503).Msg("failed to create service client")
+		return ErrServiceClient.Wrap(err)
 	}
 
 	s.containerClient = s.blobClient.ServiceClient().NewContainerClient(s.cfg.ContainerName)
@@ -165,7 +176,7 @@ func (s *Service) PreSignPutObjectURL(o *bsw.Object, timeout time.Duration) (str
 	sasURL, err := s.containerClient.NewBlobClient(path.Join(o.Bucket(), o.Key())).GetSASURL(sasPermissions, expiryTime, nil)
 	if err != nil {
 		fmt.Println(err)
-		return "", errors.Catch(err).Critical().StatusCode(503).Msg("failed to create SAS put URL")
+		return "", ErrPresignPutURL.Wrap(err)
 	}
 	fmt.Println(sasURL)
 	return sasURL, nil
@@ -179,7 +190,7 @@ func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (str
 
 	sasURL, err := s.containerClient.NewBlobClient(path.Join(o.Bucket(), o.Key())).GetSASURL(sasPermissions, expiryTime, nil)
 	if err != nil {
-		return "", errors.Catch(err).Critical().StatusCode(503).Msg("failed to create SAS get URL")
+		return "", ErrPresignGetURL.Wrap(err)
 	}
 	return sasURL, nil
 }

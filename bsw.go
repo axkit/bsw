@@ -6,7 +6,16 @@ import (
 	"github.com/axkit/errors"
 )
 
-var ErrWrongInvocation = errors.New("wrong invocation").Critical()
+var (
+	// ErrWrongInvocation is returned when a method is called for an object
+	// that does not support it, e.g. UploadURL for a multipart object.
+	ErrWrongInvocation = errors.Template("wrong invocation").
+				Code("BSW-0001").StatusCode(500).Severity(errors.Critical)
+
+	// ErrInvalidConfig is returned when a storage wrapper is misconfigured.
+	ErrInvalidConfig = errors.Template("invalid storage configuration").
+				Code("BSW-0002").StatusCode(500).Severity(errors.Critical)
+)
 
 type BlockStorageWrapper interface {
 	Name() string
@@ -108,7 +117,7 @@ func (o *Object) Parts() int {
 // UploadURL returns presigned URL for PUT object request.
 func (o *Object) UploadURL(timeout time.Duration) (string, error) {
 	if o.parts > 1 {
-		return "", ErrWrongInvocation.Capture().Set("parts", o.parts)
+		return "", ErrWrongInvocation.New().Set("parts", o.parts)
 	}
 	return o.w.PreSignPutObjectURL(o, timeout)
 }

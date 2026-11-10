@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/axkit/errors"
 	"github.com/axkit/vatel"
 )
 
@@ -23,7 +22,7 @@ func (c *UploadHandler) Input() interface{} {
 func (c *UploadHandler) Handle(ctx vatel.Context) error {
 
 	if c.input.Dest == "" {
-		return errors.ValidationFailed("dest is empty")
+		return ErrValidation.New().Msg("dest is empty")
 	}
 
 	o, err := c.d.DecodeSignedURL(c.input.Dest)
