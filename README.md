@@ -13,6 +13,8 @@ URLs for different object storages.
 go get github.com/axkit/bsw
 ```
 
+Requires Go 1.25 or newer.
+
 ## Usage
 
 ```go
@@ -50,8 +52,10 @@ which also matches `errors.ErrUnsupported`.
 ### s3
 
 `Config.Endpoint` and `Config.ForcePathStyle` allow using S3-compatible
-storages. If generating part URLs fails after the multipart upload was
-created, the upload is aborted.
+storages. The URL timeout must be positive and not longer than 7 days. If
+generating part URLs fails after the multipart upload was created, the upload
+is aborted. `CompleteMultipartUpload` accepts parts in any order and rejects
+nil parts, empty ETags, part numbers outside 1..10000 and duplicates.
 
 ### azure
 
@@ -73,7 +77,10 @@ changed without the key, and an upload token can not be used for download.
 `Config.URLEncryptionKey` must be at least 32 bytes long; use a random value.
 
 Files are stored as `<basePath>/<bucket>/<key>`. Keys with `..`, `.` or empty
-path elements, absolute keys and keys with backslashes are rejected. An upload
+path elements, absolute keys and keys with backslashes are rejected; on
+Windows also reserved names (`NUL`, ...), `:` and names ending with a dot or
+space. All file operations go through `os.Root`, so a symlink inside the base
+path can not lead outside of it. An upload
 replaces the existing file atomically. The upload size is limited by the
 fasthttp server setting `MaxRequestBodySize`.
 
@@ -100,6 +107,7 @@ them with `errors.Is(err, bsw.ErrInvalidArgument)`. Codes:
 
 ## Upgrading from v0
 
+- Go 1.25 is required.
 - `github.com/axkit/errors` v1 is required; error values are templates now.
 - fs: tokens are HMAC-signed instead of AES-CFB encrypted, tokens issued by
   older versions are rejected. `URLEncryptionKey` must be at least 32 bytes.
