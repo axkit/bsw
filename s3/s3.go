@@ -4,6 +4,8 @@ package s3
 
 import (
 	"context"
+	"reflect"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -22,6 +24,9 @@ type AwsCompletedPart = bsw.Part
 
 // DefaultRetryCount is used when Config.RetryCount is 0.
 const DefaultRetryCount = 5
+
+// MaxPresignTimeout is the longest validity of a presigned URL allowed by S3.
+const MaxPresignTimeout = 7 * 24 * time.Hour
 
 var (
 	ErrSessionInit = errors.Template("aws session init failed").
@@ -108,6 +113,11 @@ func (s *Service) PreSignMultipartObjectURL(o *bsw.Object, timeout time.Duration
 	if err := bsw.ValidateParts(o.Parts()); err != nil {
 		return nil, "", err
 	}
+	// checked before CreateMultipartUpload, so a bad timeout does not leave
+	// an incomplete upload behind
+	if err := validateTimeout(timeout); err != nil {
+		return nil, "", err
+	}
 
 	resp, err := s.svc.CreateMultipartUpload(&s3.CreateMultipartUploadInput{
 		Bucket:   aws.String(o.Bucket()),
@@ -159,24 +169,21 @@ func (s *Service) abort(o *bsw.Object, uploadID string) error {
 }
 
 // CompleteMultipartUpload merges uploaded parts into a single object.
+// Parts may be passed in any order, they are sent sorted by part number.
 func (s *Service) CompleteMultipartUpload(o *bsw.Object, uploadID string, parts []bsw.CompletedPart) error {
 	if s.svc == nil {
 		return bsw.ErrNotInitialized.New()
 	}
-	if uploadID == "" || len(parts) == 0 {
-		return bsw.ErrInvalidArgument.New().Msg("upload ID and parts are required").
-			Set("uploadID", uploadID).Set("parts", len(parts))
+	if uploadID == "" {
+		return bsw.ErrInvalidArgument.New().Msg("upload ID is required")
 	}
-
-	var cmu s3.CompletedMultipartUpload
-	for i := range parts {
-		cmu.Parts = append(cmu.Parts, &s3.CompletedPart{
-			ETag:       parts[i].ETagPtr(),
-			PartNumber: parts[i].PartNumberPtr(),
-		})
+	cps, err := completedParts(parts)
+	if err != nil {
+		return err
 	}
+	cmu := s3.CompletedMultipartUpload{Parts: cps}
 
-	_, err := s.svc.CompleteMultipartUpload(&s3.CompleteMultipartUploadInput{
+	_, err = s.svc.CompleteMultipartUpload(&s3.CompleteMultipartUploadInput{
 		Bucket:          aws.String(o.Bucket()),
 		Key:             aws.String(o.Key()),
 		UploadId:        aws.String(uploadID),
@@ -197,6 +204,9 @@ func (s *Service) PreSignPutObjectURL(o *bsw.Object, timeout time.Duration) (str
 	if s.svc == nil {
 		return "", bsw.ErrNotInitialized.New()
 	}
+	if err := validateTimeout(timeout); err != nil {
+		return "", err
+	}
 	req, _ := s.svc.PutObjectRequest(&s3.PutObjectInput{
 		Bucket:   aws.String(o.Bucket()),
 		Key:      aws.String(o.Key()),
@@ -214,6 +224,9 @@ func (s *Service) PreSignPutObjectURL(o *bsw.Object, timeout time.Duration) (str
 func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (string, error) {
 	if s.svc == nil {
 		return "", bsw.ErrNotInitialized.New()
+	}
+	if err := validateTimeout(timeout); err != nil {
+		return "", err
 	}
 	req, _ := s.svc.GetObjectRequest(&s3.GetObjectInput{
 		Bucket: aws.String(o.Bucket()),
@@ -237,4 +250,55 @@ func withAwsCode(ex *errors.Error, err error) *errors.Error {
 		ex.Set("awsErrCode", aerr.Code())
 	}
 	return ex
+}
+
+func validateTimeout(timeout time.Duration) error {
+	if timeout <= 0 || timeout > MaxPresignTimeout {
+		return bsw.ErrInvalidArgument.New().Msg("timeout must be positive and not longer than 7 days").
+			Set("timeout", timeout.String())
+	}
+	return nil
+}
+
+// completedParts validates parts and returns copies sorted by part number.
+func completedParts(parts []bsw.CompletedPart) ([]*s3.CompletedPart, error) {
+	if err := bsw.ValidateParts(len(parts)); err != nil {
+		return nil, err
+	}
+
+	res := make([]*s3.CompletedPart, 0, len(parts))
+	for i, p := range parts {
+		if isNil(p) {
+			return nil, bsw.ErrInvalidArgument.New().Msg("part is nil").Set("index", i)
+		}
+		etag, num := p.ETagPtr(), p.PartNumberPtr()
+		if etag == nil || *etag == "" {
+			return nil, bsw.ErrInvalidArgument.New().Msg("part ETag is empty").Set("index", i)
+		}
+		if num == nil || *num < 1 || *num > bsw.MaxParts {
+			return nil, bsw.ErrInvalidArgument.New().Msg("part number must be between 1 and 10000").Set("index", i)
+		}
+		res = append(res, &s3.CompletedPart{ETag: aws.String(*etag), PartNumber: aws.Int64(*num)})
+	}
+
+	sort.Slice(res, func(i, j int) bool { return *res[i].PartNumber < *res[j].PartNumber })
+	for i := 1; i < len(res); i++ {
+		if *res[i].PartNumber == *res[i-1].PartNumber {
+			return nil, bsw.ErrInvalidArgument.New().Msg("duplicate part number").Set("partNumber", *res[i].PartNumber)
+		}
+	}
+	return res, nil
+}
+
+// isNil reports whether p is nil or holds a nil pointer.
+func isNil(p bsw.CompletedPart) bool {
+	if p == nil {
+		return true
+	}
+	v := reflect.ValueOf(p)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func, reflect.Chan:
+		return v.IsNil()
+	}
+	return false
 }

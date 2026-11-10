@@ -352,3 +352,62 @@ func TestDownloadHandlerWithoutRequestCtx(t *testing.T) {
 		t.Errorf("failing writer: got %v, want ErrStorage", err)
 	}
 }
+
+// TestSymlinkEscape checks that a symlink inside basePath can not be used
+// to read or write files outside of it.
+func TestSymlinkEscape(t *testing.T) {
+	_, srv, dir := newTestServer(t)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// bucket is a symlink
+	if err := os.Symlink(outside, filepath.Join(dir, "evil")); err != nil {
+		t.Skip("symlinks are not supported:", err)
+	}
+	// nested key element is a symlink
+	if err := os.MkdirAll(filepath.Join(dir, "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "b", "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, o := range []*bsw.Object{
+		bsw.NewObject(nil, "evil", "secret"),
+		bsw.NewObject(nil, "b", "link/secret"),
+	} {
+		if err := srv.ReadObjectTo(o, io.Discard); err == nil {
+			t.Errorf("read %s/%s: file outside of base path was read", o.Bucket(), o.Key())
+		}
+		if err := srv.WriteObject(o, strings.NewReader("overwritten")); err == nil {
+			t.Errorf("write %s/%s: file outside of base path was written", o.Bucket(), o.Key())
+		}
+		if err := srv.WriteObject(bsw.NewObject(nil, o.Bucket(), o.Key()+"-new"), strings.NewReader("x")); err == nil {
+			t.Errorf("write %s/%s-new: file created outside of base path", o.Bucket(), o.Key())
+		}
+	}
+
+	if got := readFile(t, filepath.Join(outside, "secret")); got != "secret" {
+		t.Errorf("file outside of base path changed: %q", got)
+	}
+	entries, _ := os.ReadDir(outside)
+	if len(entries) != 1 {
+		t.Errorf("files created outside of base path: %v", entries)
+	}
+}
+
+func TestBasePathRemoved(t *testing.T) {
+	_, srv, dir := newTestServer(t)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	o := bsw.NewObject(nil, "b", "k")
+	if err := srv.WriteObject(o, strings.NewReader("x")); !errors.Is(err, ErrStorage) {
+		t.Errorf("write: got %v, want ErrStorage", err)
+	}
+	if err := srv.ReadObjectTo(o, io.Discard); !errors.Is(err, ErrStorage) {
+		t.Errorf("read: got %v, want ErrStorage", err)
+	}
+}

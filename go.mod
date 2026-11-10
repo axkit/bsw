@@ -1,6 +1,6 @@
 module github.com/axkit/bsw
 
-go 1.24
+go 1.25
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.3.2

@@ -272,3 +272,27 @@ func TestMultipartNotSupported(t *testing.T) {
 		t.Errorf("CompleteMultipartUpload: %v", err)
 	}
 }
+
+func TestIsWindowsSafeName(t *testing.T) {
+	for _, name := range []string{"file.txt", "a b", ".hidden", "a..b", "имя"} {
+		if !isWindowsSafeName(name) {
+			t.Errorf("isWindowsSafeName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"secret::$DATA", "a:b", "c:", "file.", "file ", "a*b", "a?b", `a"b`, "a<b", "a>b", "a|b", "a\tb"} {
+		if isWindowsSafeName(name) {
+			t.Errorf("isWindowsSafeName(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestCheckFSPath(t *testing.T) {
+	if err := checkFSPath("b", "dir/k.txt"); err != nil {
+		t.Errorf("valid path: %v", err)
+	}
+	for _, p := range [][2]string{{"..", "k"}, {"b", "../k"}, {"b", ""}, {"b", "/k"}} {
+		if err := checkFSPath(p[0], p[1]); !errors.Is(err, bsw.ErrInvalidArgument) {
+			t.Errorf("checkFSPath(%q, %q) = %v, want ErrInvalidArgument", p[0], p[1], err)
+		}
+	}
+}

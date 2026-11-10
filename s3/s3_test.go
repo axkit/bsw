@@ -189,15 +189,39 @@ func TestPreSignGetObjectURL(t *testing.T) {
 	}
 }
 
-func TestPreSignErrors(t *testing.T) {
+func TestPreSignInvalidTimeout(t *testing.T) {
+	s, fake, _ := newTestService(t)
+	o := bsw.NewObject(s, "b", "k", bsw.WithMultiParts(2))
+
+	for _, timeout := range []time.Duration{0, -time.Second, MaxPresignTimeout + time.Second} {
+		if _, err := s.PreSignPutObjectURL(o, timeout); !errors.Is(err, bsw.ErrInvalidArgument) {
+			t.Errorf("put, timeout %v: %v", timeout, err)
+		}
+		if _, err := s.PreSignGetObjectURL(o, timeout); !errors.Is(err, bsw.ErrInvalidArgument) {
+			t.Errorf("get, timeout %v: %v", timeout, err)
+		}
+		if _, _, err := s.PreSignMultipartObjectURL(o, timeout); !errors.Is(err, bsw.ErrInvalidArgument) {
+			t.Errorf("multipart, timeout %v: %v", timeout, err)
+		}
+	}
+	if n := len(fake.recorded()); n != 0 {
+		t.Errorf("sent %d requests, want none: no upload must be created for a bad timeout", n)
+	}
+
+	if _, err := s.PreSignGetObjectURL(o, MaxPresignTimeout); err != nil {
+		t.Errorf("max timeout: %v", err)
+	}
+}
+
+func TestPreSignFails(t *testing.T) {
 	s, _, _ := newTestService(t)
+	s.svc.Handlers.Sign.PushFront(func(r *request.Request) { r.Error = io.ErrUnexpectedEOF })
 	o := bsw.NewObject(s, "b", "k")
 
-	// presigning fails for a non-positive expiration
-	if _, err := s.PreSignPutObjectURL(o, 0); !errors.Is(err, ErrPresignURL) {
+	if _, err := s.PreSignPutObjectURL(o, time.Minute); !errors.Is(err, ErrPresignURL) {
 		t.Errorf("PreSignPutObjectURL: %v", err)
 	}
-	if _, err := s.PreSignGetObjectURL(o, -time.Second); !errors.Is(err, ErrPresignURL) {
+	if _, err := s.PreSignGetObjectURL(o, time.Minute); !errors.Is(err, ErrPresignURL) {
 		t.Errorf("PreSignGetObjectURL: %v", err)
 	}
 }
@@ -291,9 +315,10 @@ func TestPreSignMultipartAbortsOnPresignFailure(t *testing.T) {
 
 func TestCompleteMultipartUpload(t *testing.T) {
 	s, fake, _ := newTestService(t)
+	// out of order: S3 requires ascending part numbers
 	parts := []bsw.CompletedPart{
-		&bsw.Part{ETag: `"etag-1"`, PartNumber: 1},
 		&AwsCompletedPart{ETag: `"etag-2"`, PartNumber: 2},
+		&bsw.Part{ETag: `"etag-1"`, PartNumber: 1},
 	}
 
 	if err := s.CompleteMultipartUpload(bsw.NewObject(s, "bucket", "dir/key"), "UP-1", parts); err != nil {
@@ -309,10 +334,52 @@ func TestCompleteMultipartUpload(t *testing.T) {
 	if r.method != http.MethodPost || r.path != "/bucket/dir/key" || !strings.Contains(r.query, "uploadId=UP-1") {
 		t.Errorf("request = %s %s?%s", r.method, r.path, r.query)
 	}
-	for _, s := range []string{"etag-1", "etag-2", "<PartNumber>1</PartNumber>", "<PartNumber>2</PartNumber>"} {
-		if !strings.Contains(r.body, s) {
-			t.Errorf("body does not contain %q: %s", s, r.body)
-		}
+	i1, i2 := strings.Index(r.body, "<PartNumber>1</PartNumber>"), strings.Index(r.body, "<PartNumber>2</PartNumber>")
+	if i1 < 0 || i2 < 0 || i1 > i2 || !strings.Contains(r.body, "etag-1") || !strings.Contains(r.body, "etag-2") {
+		t.Errorf("body must contain both parts in ascending order: %s", r.body)
+	}
+	if parts[0].(*bsw.Part).PartNumber != 2 {
+		t.Error("caller's slice must not be reordered")
+	}
+}
+
+// nilETagPart returns nil pointers.
+type nilETagPart struct{}
+
+func (nilETagPart) ETagPtr() *string      { return nil }
+func (nilETagPart) PartNumberPtr() *int64 { return nil }
+
+func TestCompleteMultipartUploadInvalidParts(t *testing.T) {
+	s, fake, _ := newTestService(t)
+	o := bsw.NewObject(s, "b", "k")
+	ok := &bsw.Part{ETag: "e", PartNumber: 1}
+	var typedNil *bsw.Part
+
+	tooMany := make([]bsw.CompletedPart, bsw.MaxParts+1)
+	for i := range tooMany {
+		tooMany[i] = &bsw.Part{ETag: "e", PartNumber: int64(i + 1)}
+	}
+
+	tests := map[string][]bsw.CompletedPart{
+		"no parts":          nil,
+		"too many parts":    tooMany,
+		"nil part":          {ok, nil},
+		"typed nil part":    {typedNil},
+		"nil pointers":      {nilETagPart{}},
+		"empty etag":        {&bsw.Part{PartNumber: 1}},
+		"part number 0":     {&bsw.Part{ETag: "e", PartNumber: 0}},
+		"part number 10001": {&bsw.Part{ETag: "e", PartNumber: bsw.MaxParts + 1}},
+		"duplicate":         {ok, &bsw.Part{ETag: "e2", PartNumber: 1}},
+	}
+	for name, parts := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := s.CompleteMultipartUpload(o, "UP-1", parts); !errors.Is(err, bsw.ErrInvalidArgument) {
+				t.Fatalf("got %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
+	if n := len(fake.recorded()); n != 0 {
+		t.Errorf("sent %d requests, want none", n)
 	}
 }
 
@@ -323,9 +390,6 @@ func TestCompleteMultipartUploadErrors(t *testing.T) {
 
 	if err := s.CompleteMultipartUpload(o, "", parts); !errors.Is(err, bsw.ErrInvalidArgument) {
 		t.Errorf("empty upload ID: %v", err)
-	}
-	if err := s.CompleteMultipartUpload(o, "UP-1", nil); !errors.Is(err, bsw.ErrInvalidArgument) {
-		t.Errorf("no parts: %v", err)
 	}
 	if n := len(fake.recorded()); n != 0 {
 		t.Errorf("sent %d requests, want none", n)

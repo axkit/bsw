@@ -1,6 +1,8 @@
 package fs
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
@@ -51,44 +53,66 @@ func (s *FileSystemStorageServer) Endpoints() []vatel.Endpoint {
 	}
 }
 
+// objectPath returns the object path relative to basePath.
 func (s *FileSystemStorageServer) objectPath(o *bsw.Object) (string, error) {
-	if err := bsw.ValidateObjectPath(o.Bucket(), o.Key()); err != nil {
+	if err := checkFSPath(o.Bucket(), o.Key()); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.basePath, o.Bucket(), filepath.FromSlash(o.Key())), nil
+	return filepath.Join(o.Bucket(), filepath.FromSlash(o.Key())), nil
+}
+
+// openRoot opens basePath. All file operations go through os.Root, so
+// a symlink inside basePath can not lead outside of it.
+func (s *FileSystemStorageServer) openRoot() (*os.Root, error) {
+	root, err := os.OpenRoot(s.basePath)
+	if err != nil {
+		return nil, ErrStorage.Wrap(err).Set("path", s.basePath)
+	}
+	return root, nil
 }
 
 // WriteObject writes r to the object file. Existing content is replaced
 // atomically: data is written to a temporary file which is then renamed.
 func (s *FileSystemStorageServer) WriteObject(o *bsw.Object, r io.Reader) error {
-	fp, err := s.objectPath(o)
+	rel, err := s.objectPath(o)
 	if err != nil {
 		return err
 	}
 
-	dir := filepath.Dir(fp)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ErrStorage.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
-	}
-
-	tmp, err := os.CreateTemp(dir, ".upload-*")
+	root, err := s.openRoot()
 	if err != nil {
-		return ErrStorage.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
+		return err
 	}
-	defer os.Remove(tmp.Name()) // no-op after successful rename
+	defer root.Close()
 
-	if _, err := io.Copy(tmp, r); err != nil {
-		tmp.Close()
+	storageErr := func(err error) error {
 		return ErrStorage.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
 	}
-	if err := tmp.Close(); err != nil {
-		return ErrStorage.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
+
+	dir := filepath.Dir(rel)
+	if err := root.MkdirAll(dir, 0o755); err != nil {
+		return storageErr(err)
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-		return ErrStorage.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
+
+	var rnd [8]byte
+	rand.Read(rnd[:])
+	tmp := filepath.Join(dir, ".upload-"+hex.EncodeToString(rnd[:]))
+
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return storageErr(err)
 	}
-	if err := os.Rename(tmp.Name(), fp); err != nil {
-		return ErrStorage.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
+	defer root.Remove(tmp) // fails harmlessly after successful rename
+
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return storageErr(err)
+	}
+	if err := f.Close(); err != nil {
+		return storageErr(err)
+	}
+	if err := root.Rename(tmp, rel); err != nil {
+		return storageErr(err)
 	}
 	return nil
 }
@@ -96,12 +120,18 @@ func (s *FileSystemStorageServer) WriteObject(o *bsw.Object, r io.Reader) error 
 // OpenObject opens the object file for reading and returns its size.
 // It returns ErrObjectNotFound if the file does not exist.
 func (s *FileSystemStorageServer) OpenObject(o *bsw.Object) (*os.File, int64, error) {
-	fp, err := s.objectPath(o)
+	rel, err := s.objectPath(o)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	f, err := os.Open(fp)
+	root, err := s.openRoot()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer root.Close() // the opened file stays valid
+
+	f, err := root.Open(rel)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, 0, ErrObjectNotFound.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())

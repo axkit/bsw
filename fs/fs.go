@@ -16,6 +16,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -121,7 +123,7 @@ type tokenPayload struct {
 }
 
 func (s *Service) sign(op Op, o *bsw.Object, timeout time.Duration) (string, error) {
-	if err := bsw.ValidateObjectPath(o.Bucket(), o.Key()); err != nil {
+	if err := checkFSPath(o.Bucket(), o.Key()); err != nil {
 		return "", err
 	}
 	if timeout <= 0 {
@@ -183,7 +185,7 @@ func (s *Service) DecodeSignedURL(token string, op Op) (*bsw.Object, error) {
 			Set("expected", string(op)).Set("actual", string(p.Op))
 	}
 
-	if err := bsw.ValidateObjectPath(p.Bucket, p.Key); err != nil {
+	if err := checkFSPath(p.Bucket, p.Key); err != nil {
 		return nil, ErrInvalidSignedURL.Wrap(err).Set("reason", "invalid path")
 	}
 
@@ -196,6 +198,42 @@ func (s *Service) DecodeSignedURL(token string, op Op) (*bsw.Object, error) {
 	}
 
 	return bsw.NewObject(s, p.Bucket, p.Key).SetValidTill(p.Exp), nil
+}
+
+// checkFSPath checks that bucket and key can be used as a file path on
+// this OS: bsw.ValidateObjectPath, filepath.IsLocal (on Windows it rejects
+// reserved names like NUL) and, on Windows, names that the file system
+// changes or treats specially (alternate data streams, trailing dots).
+func checkFSPath(bucket, key string) error {
+	if err := bsw.ValidateObjectPath(bucket, key); err != nil {
+		return err
+	}
+	p := bucket + "/" + key
+	if !filepath.IsLocal(filepath.FromSlash(p)) {
+		return bsw.ErrInvalidArgument.New().Msg("invalid object path").Set("bucket", bucket).Set("key", key)
+	}
+	if runtime.GOOS == "windows" {
+		for _, c := range strings.Split(p, "/") {
+			if !isWindowsSafeName(c) {
+				return bsw.ErrInvalidArgument.New().Msg("invalid object path").Set("bucket", bucket).Set("key", key)
+			}
+		}
+	}
+	return nil
+}
+
+// isWindowsSafeName reports whether a path element is stored on Windows
+// under exactly this name.
+func isWindowsSafeName(name string) bool {
+	if strings.ContainsAny(name, `:*?"<>|`) {
+		return false
+	}
+	for _, r := range name {
+		if r < 32 {
+			return false
+		}
+	}
+	return !strings.HasSuffix(name, ".") && !strings.HasSuffix(name, " ")
 }
 
 // PreSignMultipartObjectURL is not supported.
