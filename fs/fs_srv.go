@@ -40,16 +40,8 @@ func NewFileSystemStorage(sud SignedURLDecoder, basePath string) *FileSystemStor
 // GET /api/v1/bos/download?src=<token> returns the file.
 func (s *FileSystemStorageServer) Endpoints() []vatel.Endpoint {
 	return []vatel.Endpoint{
-		{
-			Method:     "POST",
-			Path:       "/api/v1/bos/upload",
-			Controller: func() vatel.Handler { return &UploadHandler{d: s.sud, s: s} },
-		},
-		{
-			Method:     "GET",
-			Path:       "/api/v1/bos/download",
-			Controller: func() vatel.Handler { return &DownloadHandler{d: s.sud, s: s} },
-		},
+		vatel.POST("/api/v1/bos/upload", func() vatel.Handler { return &UploadHandler{d: s.sud, s: s} }),
+		vatel.GET("/api/v1/bos/download", func() vatel.Handler { return &DownloadHandler{d: s.sud, s: s} }),
 	}
 }
 

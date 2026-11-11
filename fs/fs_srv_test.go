@@ -317,21 +317,31 @@ func TestDownloadHandlerErrors(t *testing.T) {
 	}
 }
 
-// plainCtx is a vatel context without fasthttp request context.
-type plainCtx struct {
-	vatel.Context
-	w           io.Writer
+// vatelCtx lets streamCtx embed vatel.Context: an embedded field named
+// Context would hide the Context() method of the interface.
+type vatelCtx = vatel.Context
+
+// streamCtx records the response stream set by a handler.
+type streamCtx struct {
+	vatelCtx
+	r           io.Reader
+	size        int
 	contentType string
 }
 
-func (c *plainCtx) RequestCtx() *fasthttp.RequestCtx { return nil }
-func (c *plainCtx) BodyWriter() io.Writer            { return c.w }
-func (c *plainCtx) SetContentType(ct []byte) vatel.Context {
+func (c *streamCtx) SetBodyStream(r io.Reader, size int) vatel.Context {
+	c.r, c.size = r, size
+	return c
+}
+
+func (c *streamCtx) SetContentType(ct []byte) vatel.Context {
 	c.contentType = string(ct)
 	return c
 }
 
-func TestDownloadHandlerWithoutRequestCtx(t *testing.T) {
+// TestDownloadHandlerStreams checks that the handler passes the open file
+// to vatel and does not read it.
+func TestDownloadHandlerStreams(t *testing.T) {
 	s, srv, _ := newTestServer(t)
 	o := bsw.NewObject(s, "b", "k")
 	if err := srv.WriteObject(o, strings.NewReader("hello")); err != nil {
@@ -342,18 +352,20 @@ func TestDownloadHandlerWithoutRequestCtx(t *testing.T) {
 	h := srv.Endpoints()[1].Controller().(*DownloadHandler)
 	h.input.Src = get
 
-	var buf bytes.Buffer
-	ctx := &plainCtx{w: &buf}
+	ctx := &streamCtx{}
 	if err := h.Handle(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if buf.String() != "hello" || ctx.contentType != "application/octet-stream" {
-		t.Errorf("body %q, content type %q", buf.String(), ctx.contentType)
+	f, ok := ctx.r.(*os.File)
+	if !ok {
+		t.Fatalf("stream is %T, want *os.File", ctx.r)
 	}
-
-	ctx = &plainCtx{w: failingWriter{}}
-	if err := h.Handle(ctx); !errors.Is(err, ErrStorage) {
-		t.Errorf("failing writer: got %v, want ErrStorage", err)
+	defer f.Close()
+	if ctx.size != 5 || ctx.contentType != "application/octet-stream" {
+		t.Errorf("size %d, content type %q", ctx.size, ctx.contentType)
+	}
+	if b, _ := io.ReadAll(f); string(b) != "hello" {
+		t.Errorf("stream content %q, want whole file", b)
 	}
 }
 

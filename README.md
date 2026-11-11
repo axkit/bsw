@@ -13,7 +13,7 @@ URLs for different object storages.
 go get github.com/axkit/bsw
 ```
 
-Requires Go 1.25 or newer.
+Requires Go 1.26 or newer.
 
 ## Usage
 
@@ -86,7 +86,8 @@ On case-insensitive file systems (Windows, macOS by default) names that
 differ only in case refer to the same file: tokens for `TenantA/report` and
 `tenanta/report` give access to the same object. Use case-normalized bucket
 names and keys, or a case-sensitive file system, if this matters. An upload
-replaces the existing file atomically. The upload size is limited by the
+replaces the existing file atomically. A download is streamed from the file,
+it is not read into memory. The upload size is limited by the
 fasthttp server setting `MaxRequestBodySize`.
 
 ## Errors
@@ -112,7 +113,9 @@ them with `errors.Is(err, bsw.ErrInvalidArgument)`. Codes:
 
 ## Upgrading from v0
 
-- Go 1.25 is required.
+- Go 1.26 is required.
+- fs: the endpoints require [vatel](https://github.com/axkit/vatel) v1.26 or newer
+  (v0.14 is not supported); see its MIGRATION.md for the application side.
 - `github.com/axkit/errors` v1 is required; error values are templates now.
 - fs: tokens are HMAC-signed instead of AES-CFB encrypted, tokens issued by
   older versions are rejected. `URLEncryptionKey` must be at least 32 bytes.

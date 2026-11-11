@@ -1,10 +1,6 @@
 package fs
 
-import (
-	"io"
-
-	"github.com/axkit/vatel"
-)
+import "github.com/axkit/vatel"
 
 var contentTypeOctetStream = []byte("application/octet-stream")
 
@@ -38,17 +34,7 @@ func (c *DownloadHandler) Handle(ctx vatel.Context) error {
 		return err
 	}
 
-	ctx.SetContentType(contentTypeOctetStream)
-
-	// stream the file; fasthttp closes it after the response is sent
-	if rc := ctx.RequestCtx(); rc != nil {
-		rc.SetBodyStream(f, int(size))
-		return nil
-	}
-
-	defer f.Close()
-	if _, err := io.Copy(ctx.BodyWriter(), f); err != nil {
-		return ErrStorage.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
-	}
+	// vatel sends the file while writing the response and closes it after
+	ctx.SetContentType(contentTypeOctetStream).SetBodyStream(f, int(size))
 	return nil
 }

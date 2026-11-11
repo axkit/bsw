@@ -18,9 +18,9 @@ import (
 
 // newRouter registers the server endpoints in vatel the same way an
 // application does, so the tests go through vatel request decoding.
-func newRouter(t *testing.T, srv *FileSystemStorageServer) fasthttp.RequestHandler {
+func newRouter(t *testing.T, srv *FileSystemStorageServer, opts ...func(*vatel.Option)) fasthttp.RequestHandler {
 	t.Helper()
-	v := vatel.NewVatel()
+	v := vatel.NewVatel(opts...)
 	v.Add(srv)
 	mux := router.New()
 	l := zerolog.Nop()
@@ -93,5 +93,53 @@ func TestEndpointsIntegration(t *testing.T) {
 
 	if b, _ := os.ReadFile(filepath.Join(dir, "b", "dir", "k.bin")); string(b) != "payload" {
 		t.Errorf("rejected upload changed the file: %q", b)
+	}
+}
+
+type metric struct {
+	path string
+	code int
+	size int
+}
+
+type metricRecorder struct{ m []metric }
+
+func (r *metricRecorder) ReportMetric(method, path string, code int, dur float64, size int) {
+	r.m = append(r.m, metric{path: path, code: code, size: size})
+}
+
+// TestDownloadStreamWithMetrics checks that the file is sent as a stream and
+// not read into memory when vatel reports metrics.
+func TestDownloadStreamWithMetrics(t *testing.T) {
+	s, srv, _ := newTestServer(t)
+	var mr metricRecorder
+	h := newRouter(t, srv, vatel.WithMetricReporter(&mr))
+
+	o := bsw.NewObject(s, "b", "big.bin")
+	content := bytes.Repeat([]byte("0123456789"), 100_000)
+	if err := srv.WriteObject(o, bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	get, _ := s.PreSignGetObjectURL(o, time.Minute)
+
+	rc := doDownload(h, get)
+	if rc.Response.StatusCode() != 200 {
+		t.Fatalf("status %d, body %s", rc.Response.StatusCode(), rc.Response.Body())
+	}
+	// Response.Body reads a stream into memory and drops it, so the body
+	// is still a stream only if nothing read it before sending
+	if !rc.Response.IsBodyStream() {
+		t.Fatal("response body was read into memory before sending")
+	}
+	if cl := rc.Response.Header.ContentLength(); cl != len(content) {
+		t.Errorf("content length = %d, want %d", cl, len(content))
+	}
+	if !bytes.Equal(rc.Response.Body(), content) {
+		t.Error("downloaded content differs")
+	}
+
+	want := metric{path: "/api/v1/bos/download", code: 200, size: len(content)}
+	if len(mr.m) != 1 || mr.m[0] != want {
+		t.Errorf("metrics = %+v, want [%+v]", mr.m, want)
 	}
 }
