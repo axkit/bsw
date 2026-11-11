@@ -427,3 +427,22 @@ func TestBasePathRemoved(t *testing.T) {
 		t.Errorf("read: got %v, want ErrStorage", err)
 	}
 }
+
+func TestNestedBucket(t *testing.T) {
+	s, srv, dir := newTestServer(t)
+	o := bsw.NewObject(s, "org1/ws2/doc", "17")
+	if err := srv.WriteObject(o, strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, filepath.Join(dir, "org1", "ws2", "doc", "17")); got != "x" {
+		t.Errorf("stored %q", got)
+	}
+	get, err := s.PreSignGetObjectURL(o, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.DecodeSignedURL(get, OpGet)
+	if err != nil || d.Bucket() != "org1/ws2/doc" || d.Key() != "17" {
+		t.Fatalf("decoded %v, %v", d, err)
+	}
+}

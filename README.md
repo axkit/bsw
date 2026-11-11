@@ -59,8 +59,9 @@ nil parts, empty ETags, part numbers outside 1..10000 and duplicates.
 
 ### azure
 
-All objects are stored in one container, the bucket is the first element of
-the blob name: `<container>/<bucket>/<key>`. `Config.ServiceURL` overrides the
+All objects are stored in one container, the bucket is the beginning of the
+blob name: `<container>/<bucket>/<key>`; it may have several elements, e.g.
+`org1/docs`. `Config.ServiceURL` overrides the
 service URL, e.g. for Azurite.
 
 ### fs
@@ -76,8 +77,9 @@ holds the operation, bucket, key and expiration time. A token can not be
 changed without the key, and an upload token can not be used for download.
 `Config.URLEncryptionKey` must be at least 32 bytes long; use a random value.
 
-Files are stored as `<basePath>/<bucket>/<key>`. Keys with `..`, `.` or empty
-path elements, absolute keys and keys with backslashes are rejected; on
+Files are stored as `<basePath>/<bucket>/<key>`; the bucket may be a nested
+directory like `org1/docs`. Buckets and keys with `..`, `.` or empty path
+elements, absolute paths and paths with backslashes are rejected; on
 Windows also reserved names (`NUL`, ...), `:` and names ending with a dot or
 space. All file operations go through `os.Root`, so a symlink inside the base
 path can not lead outside of it.

@@ -227,12 +227,13 @@ func ValidateParts(parts int) error {
 }
 
 // ValidateObjectPath checks that bucket and key can be safely used as
-// a path: bucket is a single path element, key is a relative slash-separated
-// path without empty, "." or ".." elements and without backslashes.
-// It is used by storages where bucket and key are joined into one path
-// (fs, azure), so a key cannot point outside of its bucket.
+// a path: both are relative slash-separated paths without empty, "." or
+// ".." elements and without backslashes, so bucket may be a directory like
+// "org1/docs". It is used by storages where bucket and key are joined into
+// one path (fs, azure), so an object cannot point outside of the storage
+// root and a key cannot point outside of its bucket.
 func ValidateObjectPath(bucket, key string) error {
-	if !isValidPath(bucket) || strings.Contains(bucket, "/") {
+	if !isValidPath(bucket) {
 		return ErrInvalidArgument.New().Msg("invalid bucket name").Set("bucket", bucket)
 	}
 	if !isValidPath(key) {
