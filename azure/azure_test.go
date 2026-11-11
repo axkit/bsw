@@ -119,7 +119,7 @@ func TestPreSignErrors(t *testing.T) {
 		timeout time.Duration
 	}{
 		{"key traversal", "b", "../other/k", time.Minute},
-		{"bucket with slash", "a/b", "k", time.Minute},
+		{"bucket traversal", "a/../..", "k", time.Minute},
 		{"empty key", "b", "", time.Minute},
 		{"zero timeout", "b", "k", 0},
 		{"negative timeout", "b", "k", -time.Minute},

@@ -287,10 +287,12 @@ func TestIsWindowsSafeName(t *testing.T) {
 }
 
 func TestCheckFSPath(t *testing.T) {
-	if err := checkFSPath("b", "dir/k.txt"); err != nil {
-		t.Errorf("valid path: %v", err)
+	for _, p := range [][2]string{{"b", "dir/k.txt"}, {"org1/ws2", "k"}} {
+		if err := checkFSPath(p[0], p[1]); err != nil {
+			t.Errorf("checkFSPath(%q, %q): %v", p[0], p[1], err)
+		}
 	}
-	for _, p := range [][2]string{{"..", "k"}, {"b", "../k"}, {"b", ""}, {"b", "/k"}} {
+	for _, p := range [][2]string{{"..", "k"}, {"a/..", "k"}, {"b", "../k"}, {"b", ""}, {"b", "/k"}} {
 		if err := checkFSPath(p[0], p[1]); !errors.Is(err, bsw.ErrInvalidArgument) {
 			t.Errorf("checkFSPath(%q, %q) = %v, want ErrInvalidArgument", p[0], p[1], err)
 		}

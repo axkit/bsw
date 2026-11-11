@@ -1,7 +1,7 @@
 // Package azure implements bsw.BlockStorageWrapper for Azure Blob Storage.
 //
-// All objects are stored in one container. The bucket is used as the first
-// element of the blob name: <container>/<bucket>/<key>.
+// All objects are stored in one container. The bucket is the beginning of
+// the blob name: <container>/<bucket>/<key>, it may have several elements.
 package azure
 
 import (
