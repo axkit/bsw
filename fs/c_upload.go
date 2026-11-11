@@ -1,60 +1,41 @@
 package fs
 
 import (
-	"bytes"
-	"io"
-
-	"github.com/axkit/errors"
 	"github.com/axkit/vatel"
 )
 
+// UploadHandler handles POST /api/v1/bos/upload.
+//
+// It does not implement vatel.Inputer on purpose: vatel decodes the body
+// of a POST request with Input() as JSON, while upload is a multipart form.
+// The token is read with FormValue from the query string or the form.
 type UploadHandler struct {
-	d     SignedURLDecoder
-	s     *FileSystemStorageServer
-	input struct {
-		Dest string `param:"dest"`
-	}
+	d SignedURLDecoder
+	s *FileSystemStorageServer
 }
 
-func (c *UploadHandler) Input() interface{} {
-	return &c.input
-}
-
+// Handle stores the uploaded file.
 func (c *UploadHandler) Handle(ctx vatel.Context) error {
-
-	if c.input.Dest == "" {
-		return errors.ValidationFailed("dest is empty")
+	dest := string(ctx.FormValue("dest"))
+	if dest == "" {
+		return ErrValidation.New().Msg("dest is empty")
 	}
 
-	o, err := c.d.DecodeSignedURL(c.input.Dest)
+	o, err := c.d.DecodeSignedURL(dest, OpPut)
 	if err != nil {
 		return err
 	}
 
-	buf, err := extractFile(ctx)
-	if err != nil {
-		return err
-	}
-
-	return c.s.WriteObject(o, buf)
-}
-
-func extractFile(ctx vatel.Context) (*bytes.Buffer, error) {
 	fh, err := ctx.FormFile("file")
 	if err != nil {
-		return nil, err // errors.Wrap(err, core.ErrBadRequest).Set("reason", "file not submitted")
+		return ErrValidation.Wrap(err).Msg("file not submitted")
 	}
 
 	f, err := fh.Open()
 	if err != nil {
-		return nil, err // errors.Wrap(err, core.ErrBadRequest).Set("reason", "opening form file failed")
+		return ErrStorage.Wrap(err).Msg("opening form file failed")
 	}
 	defer f.Close()
 
-	var buf bytes.Buffer
-	_, err = io.Copy(&buf, f)
-	if err != nil {
-		return nil, err // errors.Wrap(err, core.ErrBadRequest).Set("reason", "reading form file failed")
-	}
-	return &buf, nil
+	return c.s.WriteObject(o, f)
 }

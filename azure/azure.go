@@ -1,9 +1,13 @@
+// Package azure implements bsw.BlockStorageWrapper for Azure Blob Storage.
+//
+// All objects are stored in one container. The bucket is used as the first
+// element of the blob name: <container>/<bucket>/<key>.
 package azure
 
 import (
 	"context"
 	"fmt"
-	"path"
+	"net/url"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
@@ -13,177 +17,127 @@ import (
 	"github.com/axkit/errors"
 )
 
-type AzureCompletedPart struct {
-	// Entity tag returned when the part was uploaded.
-	ETag string
+// AzureCompletedPart describes an uploaded part.
+//
+// Deprecated: use bsw.Part.
+type AzureCompletedPart = bsw.Part
 
-	// Part number that identifies the part. This is a positive integer between
-	// 1 and 10,000.
-	PartNumber int64
-}
+var (
+	ErrCredential = errors.Template("failed to create credential").
+			Code("BSW-0301").StatusCode(500).Severity(errors.Critical)
+	ErrServiceClient = errors.Template("failed to create service client").
+				Code("BSW-0302").StatusCode(503).Severity(errors.Critical)
+	ErrPresignPutURL = errors.Template("failed to create SAS put URL").
+				Code("BSW-0303").StatusCode(503).Severity(errors.Critical)
+	ErrPresignGetURL = errors.Template("failed to create SAS get URL").
+				Code("BSW-0304").StatusCode(503).Severity(errors.Critical)
+)
 
-func (p *AzureCompletedPart) ETagPtr() *string {
-	return &p.ETag
-}
-
-func (p *AzureCompletedPart) PartNumberPtr() *int64 {
-	return &p.PartNumber
-}
-
+// Service implements bsw.BlockStorageWrapper for Azure Blob Storage.
 type Service struct {
 	cfg             Config
-	blobClient      *azblob.Client
 	containerClient *container.Client
 }
 
+// Config holds Azure Blob Storage settings.
 type Config struct {
 	AccountName   string `json:"accountName"`
 	AccountKey    string `json:"accountKey"`
 	ContainerName string `json:"containerName"`
+
+	// ServiceURL overrides the blob service URL, e.g. for Azurite. Optional.
+	// Default: https://<AccountName>.blob.core.windows.net/
+	ServiceURL string `json:"serviceURL"`
 }
 
-// check that Service implements interface bsw.ObjectService
+// check that Service implements interface bsw.BlockStorageWrapper
 var _ bsw.BlockStorageWrapper = (*Service)(nil)
 
+// New returns a service. cfg is copied. Init must be called before use.
 func New(cfg *Config) *Service {
-	s := Service{cfg: *cfg}
+	var s Service
+	if cfg != nil {
+		s.cfg = *cfg
+	}
 	return &s
 }
 
+// Init creates the container client. It does not connect to Azure.
 func (s *Service) Init(ctx context.Context) error {
-	var err error
-
 	if s.cfg.AccountName == "" {
-		return errors.NewCritical("account name is not set")
+		return bsw.ErrInvalidConfig.New().Msg("account name is not set")
 	}
 
 	if s.cfg.AccountKey == "" {
-		return errors.NewCritical("account key is not set")
+		return bsw.ErrInvalidConfig.New().Msg("account key is not set")
 	}
 
 	if s.cfg.ContainerName == "" {
-		return errors.NewCritical("container name is not set")
+		return bsw.ErrInvalidConfig.New().Msg("container name is not set")
 	}
 
-	// Create a credential using the storage account name and key
 	credential, err := azblob.NewSharedKeyCredential(s.cfg.AccountName, s.cfg.AccountKey)
 	if err != nil {
-		return errors.Catch(err).Critical().Msg("failed to create credential")
+		return ErrCredential.Wrap(err)
 	}
 
-	// Create a service client
-	s.blobClient, err = azblob.NewClientWithSharedKeyCredential(
-		fmt.Sprintf("https://%s.blob.core.windows.net/", s.cfg.AccountName),
-		credential,
-		nil)
+	serviceURL := s.cfg.ServiceURL
+	if serviceURL == "" {
+		serviceURL = fmt.Sprintf("https://%s.blob.core.windows.net/", s.cfg.AccountName)
+	}
+	if u, err := url.Parse(serviceURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return bsw.ErrInvalidConfig.New().Msg("invalid service URL").Set("serviceURL", serviceURL)
+	}
+
+	client, err := azblob.NewClientWithSharedKeyCredential(serviceURL, credential, nil)
 	if err != nil {
-		return errors.Catch(err).Critical().StatusCode(503).Msg("failed to create service client")
+		return ErrServiceClient.Wrap(err)
 	}
 
-	s.containerClient = s.blobClient.ServiceClient().NewContainerClient(s.cfg.ContainerName)
-
+	s.containerClient = client.ServiceClient().NewContainerClient(s.cfg.ContainerName)
 	return nil
 }
 
+// PreSignMultipartObjectURL is not supported yet.
 func (s *Service) PreSignMultipartObjectURL(o *bsw.Object, timeout time.Duration) ([]string, string, error) {
-
-	// mui := &s3.CreateMultipartUploadInput{
-	// 	Bucket: aws.String(o.Bucket()),
-	// 	Key:    aws.String(o.Key()),
-	// }
-
-	// req, resp := s.svc.CreateMultipartUploadRequest(mui)
-
-	// req.RetryCount = s.cfg.RetryCount
-
-	// if err := req.Send(); err != nil {
-	// 	ex := errors.Catch(err).StatusCode(500).SetPairs("bucket", o.Bucket(), "key", o.Key(), "parts", o.Parts()).Critical()
-	// 	if aerr, ok := err.(awserr.Error); ok {
-	// 		ex.Set("awsErrCode", aerr.Code())
-	// 	}
-	// 	return nil, "", ex.Msg("create multipart upload request failed")
-	// }
-
-	// // from here we do have
-
-	// var res []string
-	// for i := 0; i < o.Parts(); i++ {
-	// 	x := s.svc.NewRequest(&request.Operation{
-	// 		Name:       "PutObject",
-	// 		HTTPMethod: "PUT",
-	// 		HTTPPath:   "/" + o.Bucket() + "/" + o.Key() + "?partNumber=" + strconv.Itoa(i+1) + "&uploadId=" + *resp.UploadId,
-	// 	}, nil, nil)
-
-	// 	u, err := x.Presign(timeout)
-	// 	if err != nil {
-	// 		return nil, "", errors.Catch(err).
-	// 			SetPairs("bucket", o.Bucket(), "key", o.Key(), "part", i+1).
-	// 			Critical().
-	// 			StatusCode(500).Msg("presigned part URL generation failed")
-	// 	}
-	// 	res = append(res, u)
-	// }
-
-	// return res, *resp.UploadId, nil
-	return nil, "", nil
+	return nil, "", bsw.ErrNotSupported.Wrap(errors.ErrUnsupported).Set("storage", s.Name())
 }
 
-// CompleteMultipartUpload
+// CompleteMultipartUpload is not supported yet.
 func (s *Service) CompleteMultipartUpload(o *bsw.Object, uploadID string, parts []bsw.CompletedPart) error {
-
-	// var cmu s3.CompletedMultipartUpload
-	// for i := range parts {
-	// 	cmu.Parts = append(cmu.Parts, &s3.CompletedPart{
-	// 		ETag:       parts[i].ETagPtr(),
-	// 		PartNumber: parts[i].PartNumberPtr(),
-	// 	})
-	// }
-
-	// _, err := s.svc.CompleteMultipartUpload(&s3.CompleteMultipartUploadInput{
-	// 	Bucket:          aws.String(o.Bucket()),
-	// 	Key:             aws.String(o.Bucket()),
-	// 	UploadId:        aws.String(uploadID),
-	// 	MultipartUpload: &cmu,
-	// })
-
-	// if err != nil {
-	// 	return errors.Catch(err).Critical().SetPairs("bucket", o.Bucket(), "key", o.Key(), "uploadID", uploadID).
-	// 		StatusCode(500).Msg("multipart complete failed")
-	// }
-
-	return nil
+	return bsw.ErrNotSupported.Wrap(errors.ErrUnsupported).Set("storage", s.Name())
 }
 
-// PreSignPutObjectURL_ returns presigned URL for PUT object request.
+// PreSignPutObjectURL returns a SAS URL for PUT blob request.
 func (s *Service) PreSignPutObjectURL(o *bsw.Object, timeout time.Duration) (string, error) {
-
-	fmt.Println("PreSignPutObjectURL")
-	// Define the SAS token options
-	sasPermissions := sas.BlobPermissions{Add: true, Create: true, Write: true}
-	expiryTime := time.Now().Add(timeout)
-
-	sasURL, err := s.containerClient.NewBlobClient(path.Join(o.Bucket(), o.Key())).GetSASURL(sasPermissions, expiryTime, nil)
-	if err != nil {
-		fmt.Println(err)
-		return "", errors.Catch(err).Critical().StatusCode(503).Msg("failed to create SAS put URL")
-	}
-	fmt.Println(sasURL)
-	return sasURL, nil
+	return s.sasURL(o, sas.BlobPermissions{Add: true, Create: true, Write: true}, timeout, ErrPresignPutURL)
 }
 
+// PreSignGetObjectURL returns a SAS URL for GET blob request.
 func (s *Service) PreSignGetObjectURL(o *bsw.Object, timeout time.Duration) (string, error) {
-
-	// Define the SAS token options
-	sasPermissions := sas.BlobPermissions{Read: true}
-	expiryTime := time.Now().Add(timeout)
-
-	sasURL, err := s.containerClient.NewBlobClient(path.Join(o.Bucket(), o.Key())).GetSASURL(sasPermissions, expiryTime, nil)
-	if err != nil {
-		return "", errors.Catch(err).Critical().StatusCode(503).Msg("failed to create SAS get URL")
-	}
-	return sasURL, nil
+	return s.sasURL(o, sas.BlobPermissions{Read: true}, timeout, ErrPresignGetURL)
 }
 
+func (s *Service) sasURL(o *bsw.Object, perms sas.BlobPermissions, timeout time.Duration, tpl *errors.ErrorTemplate) (string, error) {
+	if s.containerClient == nil {
+		return "", bsw.ErrNotInitialized.New()
+	}
+	if err := bsw.ValidateObjectPath(o.Bucket(), o.Key()); err != nil {
+		return "", err
+	}
+	if timeout <= 0 {
+		return "", bsw.ErrInvalidArgument.New().Msg("timeout must be positive").Set("timeout", timeout.String())
+	}
+
+	blob := s.containerClient.NewBlobClient(o.Bucket() + "/" + o.Key())
+	u, err := blob.GetSASURL(perms, time.Now().Add(timeout), nil)
+	if err != nil {
+		return "", tpl.Wrap(err).Set("bucket", o.Bucket()).Set("key", o.Key())
+	}
+	return u, nil
+}
+
+// Name returns "azure".
 func (s *Service) Name() string {
 	return "azure"
 }

@@ -1,10 +1,10 @@
 package fs
 
-import (
-	"github.com/axkit/errors"
-	"github.com/axkit/vatel"
-)
+import "github.com/axkit/vatel"
 
+var contentTypeOctetStream = []byte("application/octet-stream")
+
+// DownloadHandler handles GET /api/v1/bos/download.
 type DownloadHandler struct {
 	d     SignedURLDecoder
 	s     *FileSystemStorageServer
@@ -13,24 +13,28 @@ type DownloadHandler struct {
 	}
 }
 
-func (c *DownloadHandler) Input() interface{} {
+// Input returns the request parameters.
+func (c *DownloadHandler) Input() any {
 	return &c.input
 }
 
+// Handle writes the file to the response.
 func (c *DownloadHandler) Handle(ctx vatel.Context) error {
-
 	if c.input.Src == "" {
-		return errors.ValidationFailed("src is empty")
+		return ErrValidation.New().Msg("src is empty")
 	}
 
-	o, err := c.d.DecodeSignedURL(c.input.Src)
+	o, err := c.d.DecodeSignedURL(c.input.Src, OpGet)
 	if err != nil {
 		return err
 	}
 
-	if !o.StillValid() {
-		return errors.ValidationFailed("signed url is expired")
+	f, size, err := c.s.OpenObject(o)
+	if err != nil {
+		return err
 	}
 
-	return c.s.ReadObjectTo(o, ctx.BodyWriter())
+	// vatel sends the file while writing the response and closes it after
+	ctx.SetContentType(contentTypeOctetStream).SetBodyStream(f, int(size))
+	return nil
 }
